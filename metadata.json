@@ -1,0 +1,6 @@
+{
+  "name": "T99 HALLOWEEN - Votação da Melhor Fantasia",
+  "description": "Aplicativo assombrado de votação de melhor fantasia de Halloween com ranking em tempo real no Firebase Firestore.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

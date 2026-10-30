@@ -1,0 +1,51 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default Deny Fallback
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidCandidate(data) {
+      return data.id is string && data.id.size() <= 64 &&
+             data.name is string && data.name.size() >= 2 && data.name.size() <= 100 &&
+             data.costumeName is string && data.costumeName.size() >= 2 && data.costumeName.size() <= 120 &&
+             data.votes is number && data.votes >= 0 &&
+             data.photos is list && data.photos.size() <= 2;
+    }
+
+    function isValidVote(data) {
+      return data.deviceId is string && data.deviceId.size() <= 128 &&
+             data.candidateId is string && data.candidateId.size() <= 64;
+    }
+
+    // Candidatos da Votação de Halloween T99
+    match /candidates/{candidateId} {
+      allow read: if isValidId(candidateId);
+      allow list: if true;
+      allow create: if isValidId(candidateId) && isValidCandidate(request.resource.data);
+      allow update: if isValidId(candidateId) && isValidCandidate(request.resource.data);
+      allow delete: if isValidId(candidateId);
+    }
+
+    // Registro de Voto Único por PC
+    match /votes/{voteId} {
+      allow read: if isValidId(voteId);
+      allow list: if true;
+      allow create: if isValidId(voteId) && isValidVote(request.resource.data);
+      allow update: if isValidId(voteId) && isValidVote(request.resource.data);
+      allow delete: if isValidId(voteId);
+    }
+
+    // Configurações do Evento e Reset
+    match /config/{configId} {
+      allow read: if isValidId(configId);
+      allow write: if isValidId(configId);
+    }
+  }
+}

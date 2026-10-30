@@ -1,0 +1,108 @@
+{
+  "entities": {
+    "Candidate": {
+      "title": "Candidate",
+      "description": "Candidato participante do concurso de melhor fantasia de Halloween T99",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Identificador único do candidato",
+          "maxLength": 64
+        },
+        "name": {
+          "type": "string",
+          "description": "Nome do participante",
+          "minLength": 2,
+          "maxLength": 100
+        },
+        "costumeName": {
+          "type": "string",
+          "description": "Nome da fantasia assustadora",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "category": {
+          "type": "string",
+          "description": "Categoria da fantasia",
+          "maxLength": 60
+        },
+        "description": {
+          "type": "string",
+          "description": "Descrição ou história assombrosa da fantasia",
+          "maxLength": 500
+        },
+        "photos": {
+          "type": "array",
+          "description": "Lista com até 2 fotos tiradas ou enviadas (URLs ou base64 otimizado)"
+        },
+        "votes": {
+          "type": "number",
+          "description": "Contagem de votos recebidos"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Timestamp ISO da criação"
+        }
+      },
+      "required": ["id", "name", "costumeName", "photos", "votes"]
+    },
+    "Vote": {
+      "title": "Vote",
+      "description": "Registro de voto único por PC/dispositivo",
+      "type": "object",
+      "properties": {
+        "deviceId": {
+          "type": "string",
+          "description": "Identificador do PC ou navegador",
+          "maxLength": 128
+        },
+        "candidateId": {
+          "type": "string",
+          "description": "ID do candidato votado",
+          "maxLength": 64
+        },
+        "candidateName": {
+          "type": "string",
+          "description": "Nome da fantasia ou participante votado",
+          "maxLength": 120
+        },
+        "votedAt": {
+          "type": "string",
+          "description": "Timestamp ISO do voto"
+        }
+      },
+      "required": ["deviceId", "candidateId", "votedAt"]
+    },
+    "AdminConfig": {
+      "title": "AdminConfig",
+      "description": "Configurações gerais do concurso e reset de votos",
+      "type": "object",
+      "properties": {
+        "votingOpen": {
+          "type": "boolean",
+          "description": "Status da votação aberta ou fechada"
+        },
+        "lastResetAt": {
+          "type": "string",
+          "description": "Última data de reset dos votos"
+        }
+      },
+      "required": ["votingOpen"]
+    }
+  },
+  "firestore": {
+    "/candidates/{candidateId}": {
+      "schema": "Candidate",
+      "description": "Coleção de fantasias candidatas concorrendo ao prêmio T99 Halloween"
+    },
+    "/votes/{voteId}": {
+      "schema": "Vote",
+      "description": "Registro de votos para garantir regra de 1 voto por PC"
+    },
+    "/config/{configId}": {
+      "schema": "AdminConfig",
+      "description": "Parâmetros globais do evento de Halloween"
+    }
+  }
+}
