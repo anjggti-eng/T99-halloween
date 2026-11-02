@@ -10,10 +10,19 @@ export interface Candidate {
 }
 
 export interface VoteRecord {
+  id?: string;
   deviceId: string;
+  voterName: string;
   candidateId: string;
   candidateName: string;
   votedAt: string;
+}
+
+export interface LocalVoteInfo {
+  candidateId: string;
+  candidateName: string;
+  votedAt: string;
+  voterName?: string;
 }
 
 export interface ContestConfig {

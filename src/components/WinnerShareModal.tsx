@@ -169,7 +169,7 @@ export const WinnerShareModal: React.FC<WinnerShareModalProps> = ({
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.95 }}
-        className="relative w-full max-w-lg bg-[#11091d] border-2 border-orange-500/50 rounded-3xl overflow-hidden shadow-2xl glow-orange"
+        className="relative w-full max-w-lg bg-black/95 border-2 border-orange-500/50 rounded-3xl overflow-hidden shadow-2xl glow-orange"
       >
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-orange-500/20 bg-black/40">

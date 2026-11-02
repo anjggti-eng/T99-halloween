@@ -10,12 +10,14 @@ import {
   Share2,
   PlusCircle,
   Trophy,
+  UserCheck,
 } from 'lucide-react';
 import { Candidate } from './types';
 import {
   subscribeToCandidates,
   checkDeviceVote,
   castVote,
+  resetAllVotes,
 } from './services/contestService';
 import { getDeviceId, getLocalVote, setLocalVote, clearLocalVote, LocalVoteInfo } from './utils/device';
 import { spookyAudio } from './utils/audio';
@@ -23,10 +25,12 @@ import { fireHalloweenConfetti } from './utils/confetti';
 import { IntroScreen } from './components/IntroScreen';
 import { Navbar } from './components/Navbar';
 import { RankingTab } from './components/RankingTab';
+import { DatabaseStatusBar } from './components/DatabaseStatusBar';
 import { CandidateCard } from './components/CandidateCard';
 import { CandidateModal } from './components/CandidateModal';
 import { WinnerShareModal } from './components/WinnerShareModal';
 import { AdminPanel } from './components/AdminPanel';
+import { VoteConfirmModal } from './components/VoteConfirmModal';
 
 export default function App() {
   const [isIntroActive, setIsIntroActive] = useState(true);
@@ -39,10 +43,12 @@ export default function App() {
   // Modals state
   const [selectedCandidateForDetails, setSelectedCandidateForDetails] = useState<Candidate | null>(null);
   const [selectedCandidateForShare, setSelectedCandidateForShare] = useState<Candidate | null>(null);
+  const [candidateToVote, setCandidateToVote] = useState<Candidate | null>(null);
   const [isAdminOpen, setIsAdminOpen] = useState(false);
 
   // Audio playing indicator
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
+  const [isQuotaExceeded, setIsQuotaExceeded] = useState(false);
 
   // Notification Banner
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -56,6 +62,14 @@ export default function App() {
 
   // Initialize Device and Listeners (NO automatic candidate deletion)
   useEffect(() => {
+    // Zero all votes as requested: resets vote counters and vote registry
+    if (typeof window !== 'undefined' && localStorage.getItem('t99_user_requested_zero') !== 'v1') {
+      localStorage.setItem('t99_user_requested_zero', 'v1');
+      clearLocalVote();
+      setMyVote(null);
+      resetAllVotes().catch((e: unknown) => console.warn('Supabase reset notice:', e));
+    }
+
     const id = getDeviceId();
     setDeviceId(id);
 
@@ -65,7 +79,7 @@ export default function App() {
       setMyVote(local);
     }
 
-    // Remote verify from Firestore
+    // Remote verify from Supabase
     checkDeviceVote(id)
       .then((serverVote) => {
         if (serverVote) {
@@ -73,6 +87,7 @@ export default function App() {
             candidateId: serverVote.candidateId,
             candidateName: serverVote.candidateName,
             votedAt: serverVote.votedAt,
+            voterName: serverVote.voterName,
           };
           setMyVote(voteInfo);
           setLocalVote(voteInfo);
@@ -86,14 +101,17 @@ export default function App() {
         console.warn('Could not verify device vote status on start:', err);
       });
 
-    // Subscribe to Firestore Candidates (persisted permanently until manual delete)
+    // Subscribe to Candidates (persisted permanently until manual delete)
     const unsubscribe = subscribeToCandidates(
       (list) => {
         setCandidates(list);
         setIsLoading(false);
       },
-      (err) => {
-        console.error('Subscription error:', err);
+      (err: unknown) => {
+        const errorObj = err as { isQuota?: boolean; rawError?: unknown };
+        if (errorObj?.isQuota || (err instanceof Error && err.message.includes('Quota exceeded'))) {
+          setIsQuotaExceeded(true);
+        }
         setIsLoading(false);
       }
     );
@@ -117,23 +135,42 @@ export default function App() {
     return candidates.reduce((acc, c) => acc + c.votes, 0);
   }, [candidates]);
 
-  const handleVote = async (candidate: Candidate) => {
+  // Click on "Votar" button -> Opens modal asking for mandatory full name
+  const handleVoteClick = (candidate: Candidate) => {
+    if (myVote) {
+      showToast(`Você já votou em "${myVote.candidateName}" neste computador!`);
+      return;
+    }
+    setCandidateToVote(candidate);
+  };
+
+  // Confirm vote with verified full name
+  const handleConfirmVote = async (candidate: Candidate, voterFullName: string) => {
     if (myVote) {
       showToast(`Você já votou em "${myVote.candidateName}" neste computador!`);
       return;
     }
 
     try {
-      await castVote(candidate.id, candidate.costumeName, deviceId);
+      await castVote(candidate.id, candidate.costumeName, deviceId, voterFullName);
       const newVote: LocalVoteInfo = {
         candidateId: candidate.id,
         candidateName: candidate.costumeName,
         votedAt: new Date().toISOString(),
+        voterName: voterFullName,
       };
       setMyVote(newVote);
       setLocalVote(newVote);
+
+      // Immediately reflect vote in UI state even if offline or under network fallback
+      setCandidates((prev) =>
+        prev
+          .map((c) => (c.id === candidate.id ? { ...c, votes: c.votes + 1 } : c))
+          .sort((a, b) => b.votes - a.votes)
+      );
+
       fireHalloweenConfetti();
-      showToast(`🎃 Seu voto na fantasia "${candidate.costumeName}" foi computado com sucesso!`);
+      showToast(`🎃 Voto de ${voterFullName} na fantasia "${candidate.costumeName}" registrado com sucesso!`);
     } catch (err) {
       console.error(err);
       if (err instanceof Error) {
@@ -141,6 +178,7 @@ export default function App() {
       } else {
         showToast('Não foi possível computar o voto. Tente novamente.');
       }
+      throw err;
     }
   };
 
@@ -156,7 +194,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#08040d] text-gray-100 flex flex-col selection:bg-orange-600 selection:text-white relative">
+    <div className="min-h-screen bg-black text-gray-100 flex flex-col selection:bg-orange-600 selection:text-white relative">
       {/* Animated Haunted Intro Gate - Autoplay Fullscreen Video */}
       {isIntroActive && (
         <IntroScreen
@@ -167,10 +205,18 @@ export default function App() {
         />
       )}
 
-      {/* Atmospheric Fog Effect in background */}
-      <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
-        <div className="absolute -top-32 left-1/4 w-[600px] h-[600px] bg-purple-950/20 rounded-full blur-[140px] animate-fog" />
-        <div className="absolute top-1/2 -right-40 w-[550px] h-[550px] bg-orange-950/20 rounded-full blur-[150px] animate-fog" />
+      {/* Animated Haunted Background Video - Centered Monster Hand with Glowing Eye */}
+      <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden flex items-center justify-center bg-black">
+        <video
+          src="/assets/aistudio/From_Klickpin.com-_Seasonal_Crochet_Project_Ideas_to_Refresh_Your_Routine-pin-id-1074530792347900323_49b28d52.mp4"
+          autoPlay
+          loop
+          muted
+          playsInline
+          className="w-full h-full object-contain max-w-2xl sm:max-w-3xl opacity-45 sm:opacity-55 mix-blend-screen pointer-events-none filter drop-shadow-[0_0_80px_rgba(6,182,212,0.45)] transition-opacity duration-1000"
+        />
+        {/* Vignette blending edges seamlessly with pitch black background */}
+        <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-black pointer-events-none" />
       </div>
 
       {/* Sticky Header Navigation with Tab Switcher */}
@@ -185,6 +231,9 @@ export default function App() {
         onSelectTab={setActiveTab}
       />
 
+      {/* Supabase Self-Hosted Database Status Bar */}
+      <DatabaseStatusBar onOpenSqlHelper={() => setIsAdminOpen(true)} />
+
       {/* Toast Alert */}
       <AnimatePresence>
         {toastMessage && (
@@ -192,7 +241,7 @@ export default function App() {
             initial={{ opacity: 0, y: -30 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
-            className="fixed top-20 left-1/2 -translate-x-1/2 z-50 px-6 py-3 rounded-2xl bg-[#1c0827]/95 border-2 border-orange-500 shadow-2xl text-orange-200 text-xs sm:text-sm font-semibold flex items-center gap-3 backdrop-blur-md glow-orange"
+            className="fixed top-20 left-1/2 -translate-x-1/2 z-50 px-6 py-3 rounded-2xl bg-black/95 border-2 border-orange-500 shadow-2xl text-orange-200 text-xs sm:text-sm font-semibold flex items-center gap-3 backdrop-blur-md glow-orange"
           >
             <Flame className="w-4 h-4 text-orange-400 animate-pulse" />
             <span>{toastMessage}</span>
@@ -214,22 +263,30 @@ export default function App() {
           </h1>
 
           <p className="text-xs sm:text-sm text-gray-300 font-sans leading-relaxed max-w-xl mx-auto">
-            Vote na fantasia mais criativa e assustadora. Apenas 1 voto por computador!
+            Vote na fantasia mais criativa e assustadora. É obrigatório colocar seu nome completo antes de votar!
           </p>
 
           {/* Device Vote Status Banner */}
           <div className="mt-4 inline-block">
             {myVote ? (
-              <div className="px-5 py-2 rounded-2xl bg-emerald-950/70 border border-emerald-500/60 text-emerald-300 text-xs sm:text-sm font-medium flex items-center gap-2.5 shadow-lg shadow-emerald-950/50">
+              <div className="px-5 py-2.5 rounded-2xl bg-emerald-950/80 border border-emerald-500/70 text-emerald-300 text-xs sm:text-sm font-medium flex items-center gap-2.5 shadow-lg shadow-emerald-950/60">
                 <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0" />
                 <span>
-                  Voto registrado neste PC: <strong className="text-white underline">{myVote.candidateName}</strong> 🎃
+                  Voto registrado neste PC: <strong className="text-white underline">{myVote.candidateName}</strong>
+                  {myVote.voterName && (
+                    <span className="text-emerald-200 ml-1">
+                      por <strong className="text-white">{myVote.voterName}</strong>
+                    </span>
+                  )}{' '}
+                  🎃
                 </span>
               </div>
             ) : (
-              <div className="px-4 py-1.5 rounded-2xl bg-black/60 border border-orange-500/20 text-orange-300/90 text-xs flex items-center gap-2">
-                <Info className="w-3.5 h-3.5 text-orange-400 flex-shrink-0" />
-                <span>Cada computador tem direito a apenas 1 voto único.</span>
+              <div className="px-4 py-2 rounded-2xl bg-black/70 border border-orange-500/40 text-orange-300 text-xs flex items-center gap-2">
+                <UserCheck className="w-4 h-4 text-orange-400 flex-shrink-0" />
+                <span>
+                  <strong>Identificação obrigatória:</strong> Informe seu nome completo ao votar. Apenas 1 voto por computador!
+                </span>
               </div>
             )}
           </div>
@@ -273,7 +330,7 @@ export default function App() {
           />
         ) : (
           /* TAB 2: VOTING TAB */
-          <div className="space-y-6">
+          <div className="space-y-6 relative">
             {/* Header */}
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-orange-500/20 pb-4">
               <div>
@@ -350,7 +407,7 @@ export default function App() {
                       rankIndex={rankIdx}
                       hasVotedOnThisPc={!!myVote}
                       isMyVote={isMyVoteCandidate}
-                      onVote={handleVote}
+                      onVote={handleVoteClick}
                       onOpenDetails={(c) => setSelectedCandidateForDetails(c)}
                       totalVotesAll={totalVotes}
                     />
@@ -363,21 +420,29 @@ export default function App() {
       </main>
 
       {/* Footer with Secret Admin Link */}
-      <footer className="relative z-10 border-t border-orange-500/20 bg-[#06030a] py-8 mt-16 text-center text-xs text-gray-400">
+      <footer className="relative z-10 border-t border-orange-500/20 bg-black py-8 mt-16 text-center text-xs text-gray-400">
         <div className="max-w-7xl mx-auto px-4 space-y-3">
-          <div className="flex items-center justify-center gap-2 text-orange-500">
-            <span>🕷️</span>
+          <div className="flex items-center justify-center gap-2.5 text-orange-500">
+            <div className="w-8 h-8 rounded-lg overflow-hidden border border-orange-500/60 shadow-md bg-black inline-block">
+              <video
+                src="/assets/aistudio/From_Klickpin.com-_Paper_Flower_Ideas_Ideas_Youll_Keep_Coming_Back_To_54276-pin-id-703898616798679291_7dc131f0.mp4"
+                autoPlay
+                loop
+                muted
+                playsInline
+                className="w-full h-full object-cover"
+              />
+            </div>
             <span className="font-creepster text-lg tracking-wider">T99 HALLOWEEN</span>
-            <span>🦇</span>
           </div>
 
           <p className="text-gray-400 max-w-md mx-auto text-[11px] leading-relaxed">
-            Aplicativo assombrado de votação de melhor fantasia de Halloween com ranking em tempo real no Firebase Firestore.
+            Aplicativo assombrado de votação de melhor fantasia de Halloween com ranking em tempo real sincronizado via Supabase Self-Hosted.
           </p>
 
           <div className="pt-2 flex flex-wrap items-center justify-center gap-4 text-[11px]">
             <span className="text-gray-400">
-              Regra: 1 Voto por Computador
+              Regra: Nome Completo Obrigatório • 1 Voto por Computador
             </span>
             <span>•</span>
             <button
@@ -385,7 +450,7 @@ export default function App() {
               className="text-gray-400 hover:text-red-400 flex items-center gap-1 transition-colors cursor-pointer"
             >
               <Lock className="w-3 h-3" />
-              <span>Acesso Oculto do Administrador (Editar / Cadastrar / Excluir)</span>
+              <span>Acesso Oculto do Administrador (Auditoria de Votos / Gerenciar)</span>
             </button>
           </div>
 
@@ -402,13 +467,22 @@ export default function App() {
         hasVotedOnThisPc={!!myVote}
         isMyVote={myVote?.candidateId === selectedCandidateForDetails?.id}
         onVote={(c) => {
-          handleVote(c);
           setSelectedCandidateForDetails(null);
+          handleVoteClick(c);
         }}
         onShare={(c) => {
           setSelectedCandidateForDetails(null);
           setSelectedCandidateForShare(c);
         }}
+      />
+
+      {/* Vote Confirmation Modal with Mandatory Full Name */}
+      <VoteConfirmModal
+        isOpen={!!candidateToVote}
+        candidate={candidateToVote}
+        onClose={() => setCandidateToVote(null)}
+        onConfirm={handleConfirmVote}
+        hasVotedOnThisPc={!!myVote}
       />
 
       {/* Social Share Winner Modal */}
@@ -422,7 +496,7 @@ export default function App() {
         }
       />
 
-      {/* Hidden Admin Management Panel */}
+      {/* Hidden Admin Management Panel with Candidate Management & Vote Audit */}
       <AdminPanel
         isOpen={isAdminOpen}
         onClose={() => setIsAdminOpen(false)}

@@ -24,12 +24,21 @@ export const Navbar: React.FC<NavbarProps> = ({
   onSelectTab,
 }) => {
   return (
-    <header className="sticky top-0 z-40 border-b border-orange-500/20 bg-[#07030c]/95 backdrop-blur-md">
+    <header className="sticky top-0 z-40 border-b border-orange-500/20 bg-black/95 backdrop-blur-md">
       {/* Top Banner Bar */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-4">
-        {/* Logo / Brand */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-2.5 flex items-center justify-between gap-4">
+        {/* Logo / Brand with Animated Monster Video Logo */}
         <div className="flex items-center gap-3">
-          <div className="text-3xl animate-flicker">🎃</div>
+          <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl overflow-hidden border-2 border-orange-500 shadow-lg shadow-orange-600/40 bg-black flex-shrink-0">
+            <video
+              src="/assets/aistudio/From_Klickpin.com-_Paper_Flower_Ideas_Ideas_Youll_Keep_Coming_Back_To_54276-pin-id-703898616798679291_7dc131f0.mp4"
+              autoPlay
+              loop
+              muted
+              playsInline
+              className="w-full h-full object-cover"
+            />
+          </div>
           <div>
             <div className="flex items-center gap-2">
               <span className="text-2xl sm:text-3xl font-black font-creepster tracking-wider text-orange-500 text-glow-orange">

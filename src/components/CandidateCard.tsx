@@ -69,8 +69,8 @@ export const CandidateCard: React.FC<CandidateCardProps> = ({
       transition={{ type: 'spring', stiffness: 300, damping: 20 }}
       className={`group relative rounded-2xl overflow-hidden border transition-all duration-300 flex flex-col ${
         isMyVote
-          ? 'border-emerald-500/80 bg-[#120d22] shadow-2xl shadow-emerald-500/20'
-          : 'border-orange-500/30 hover:border-orange-500/70 bg-[#0e071a]/90 hover:shadow-2xl hover:shadow-orange-600/25'
+          ? 'border-emerald-500/80 bg-black/90 shadow-2xl shadow-emerald-500/20'
+          : 'border-orange-500/30 hover:border-orange-500/70 bg-black/90 hover:shadow-2xl hover:shadow-orange-600/25'
       }`}
     >
       {/* Visual Rank Badge */}
@@ -98,7 +98,7 @@ export const CandidateCard: React.FC<CandidateCardProps> = ({
         />
 
         {/* Dark gradient for text readability */}
-        <div className="absolute inset-0 bg-gradient-to-t from-[#0e071a] via-transparent to-black/30 pointer-events-none" />
+        <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-black/30 pointer-events-none" />
 
         {/* 2-Photo selector badge & switcher if 2 photos exist */}
         {photos.length > 1 && (

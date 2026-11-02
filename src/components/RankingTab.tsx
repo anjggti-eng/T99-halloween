@@ -97,12 +97,12 @@ export const RankingTab: React.FC<RankingTabProps> = ({
                   whileHover={{ scale: 1.01 }}
                   className={`p-4 rounded-2xl border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
                     isTop1
-                      ? 'bg-[#180b2c] border-amber-500/70 shadow-lg shadow-amber-500/20'
+                      ? 'bg-black/95 border-amber-500/70 shadow-lg shadow-amber-500/20'
                       : isTop2
-                      ? 'bg-[#120822] border-slate-400/50'
+                      ? 'bg-black/90 border-slate-400/50'
                       : isTop3
-                      ? 'bg-[#120822] border-amber-700/50'
-                      : 'bg-[#0d0617]/90 border-white/10'
+                      ? 'bg-black/90 border-amber-700/50'
+                      : 'bg-black/80 border-white/10'
                   }`}
                 >
                   {/* Left: Position + Photo + Name */}

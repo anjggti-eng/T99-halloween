@@ -41,7 +41,7 @@ export const CandidateModal: React.FC<CandidateModalProps> = ({
         initial={{ opacity: 0, scale: 0.95, y: 20 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95, y: 20 }}
-        className="relative w-full max-w-3xl my-8 bg-[#10081d] border-2 border-orange-500/40 rounded-3xl overflow-hidden shadow-2xl glow-orange flex flex-col"
+        className="relative w-full max-w-3xl my-8 bg-black/95 border-2 border-orange-500/40 rounded-3xl overflow-hidden shadow-2xl glow-orange flex flex-col"
       >
         {/* Header Bar */}
         <div className="flex items-center justify-between p-5 border-b border-orange-500/20 bg-black/40">

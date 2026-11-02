@@ -19,6 +19,7 @@ export interface LocalVoteInfo {
   candidateId: string;
   candidateName: string;
   votedAt: string;
+  voterName?: string;
 }
 
 export function getLocalVote(): LocalVoteInfo | null {

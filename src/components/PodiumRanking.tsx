@@ -90,7 +90,7 @@ export const PodiumRanking: React.FC<PodiumRankingProps> = ({
 
         {/* Podium Base Pillar */}
         <div
-          className={`w-full ${heightClass} rounded-t-xl bg-gradient-to-b from-[#1c0d32] to-[#0d0617] border-t border-x border-orange-500/30 p-2 sm:p-3 flex flex-col items-center justify-between shadow-2xl relative overflow-hidden`}
+          className={`w-full ${heightClass} rounded-t-xl bg-gradient-to-b from-neutral-900 to-black border-t border-x border-orange-500/30 p-2 sm:p-3 flex flex-col items-center justify-between shadow-2xl relative overflow-hidden`}
         >
           <div className="text-center">
             <span className="text-lg sm:text-2xl font-black font-creepster text-orange-500">
