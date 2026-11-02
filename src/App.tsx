@@ -18,6 +18,8 @@ import {
   checkDeviceVote,
   castVote,
   resetAllVotes,
+  INITIAL_REGISTERED_CANDIDATES,
+  saveCachedCandidates,
 } from './services/contestService';
 import { getDeviceId, getLocalVote, setLocalVote, clearLocalVote, LocalVoteInfo } from './utils/device';
 import { spookyAudio } from './utils/audio';
@@ -68,6 +70,12 @@ export default function App() {
       clearLocalVote();
       setMyVote(null);
       resetAllVotes().catch((e: unknown) => console.warn('Supabase reset notice:', e));
+    }
+
+    // Ensure all 14 registered Halloween candidates are populated
+    if (typeof window !== 'undefined' && localStorage.getItem('t99_14_fantasias_loaded') !== 'v2') {
+      localStorage.setItem('t99_14_fantasias_loaded', 'v2');
+      saveCachedCandidates(INITIAL_REGISTERED_CANDIDATES);
     }
 
     const id = getDeviceId();
@@ -232,7 +240,10 @@ export default function App() {
       />
 
       {/* Supabase Self-Hosted Database Status Bar */}
-      <DatabaseStatusBar onOpenSqlHelper={() => setIsAdminOpen(true)} />
+      <DatabaseStatusBar
+        onOpenSqlHelper={() => setIsAdminOpen(true)}
+        onUploadSuccess={() => showToast('8 Fantasias enviadas com sucesso ao Supabase!')}
+      />
 
       {/* Toast Alert */}
       <AnimatePresence>
@@ -330,7 +341,7 @@ export default function App() {
           />
         ) : (
           /* TAB 2: VOTING TAB */
-          <div className="space-y-6 relative">
+          <div className="space-y-6 relative bg-black rounded-3xl p-4 sm:p-8 border border-orange-500/25 shadow-2xl">
             {/* Header */}
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-orange-500/20 pb-4">
               <div>

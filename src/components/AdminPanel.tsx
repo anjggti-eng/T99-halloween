@@ -24,6 +24,11 @@ import {
   ShieldCheck,
   UserCheck,
   FileText,
+  UploadCloud,
+  Server,
+  Loader2,
+  Database,
+  Sparkles,
 } from 'lucide-react';
 import { Candidate, VoteRecord } from '../types';
 import {
@@ -34,7 +39,12 @@ import {
   purgeAllCandidatesAndVotes,
   subscribeToVotes,
   deleteVote,
+  uploadCandidatesToSupabase,
+  testSupabaseConnection,
+  INITIAL_REGISTERED_CANDIDATES,
+  resetTo14OfficialCandidates,
 } from '../services/contestService';
+import { SUPABASE_URL } from '../supabase/config';
 import { CameraCaptureModal } from './CameraCaptureModal';
 
 interface AdminPanelProps {
@@ -85,9 +95,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
 
-  // Supabase SQL script modal
+  // Supabase SQL script modal & Seed states
   const [showSqlModal, setShowSqlModal] = useState(false);
+  const [sqlModalTab, setSqlModalTab] = useState<'full' | 'seed' | 'schema'>('full');
   const [sqlCopied, setSqlCopied] = useState(false);
+  const [isUploadingToSupabase, setIsUploadingToSupabase] = useState(false);
+  const [supabaseSyncResult, setSupabaseSyncResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [isTestingSupabase, setIsTestingSupabase] = useState(false);
+  const [supabaseConnInfo, setSupabaseConnInfo] = useState<{ connected: boolean; count?: number; latencyMs?: number; error?: string } | null>(null);
 
   // Subscribe to all votes when admin is open and authenticated
   useEffect(() => {
@@ -102,12 +117,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     };
   }, [isOpen, isAuthenticated]);
 
-  const SUPABASE_SQL_SCRIPT = `-- ========================================================
--- T99 HALLOWEEN - SUPABASE SCHEMA FOR SELF-HOSTED INSTANCE
--- Executar no SQL Editor do seu Supabase (http://192.168.3.108:8000)
--- ========================================================
-
--- 1. Tabela de Candidatos e Fantasias
+  const SUPABASE_SCHEMA_SQL = `-- 1. Tabela de Candidatos e Fantasias
 CREATE TABLE IF NOT EXISTS public.candidates (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -129,35 +139,152 @@ CREATE TABLE IF NOT EXISTS public.votes (
   voted_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Garantir coluna voter_name caso a tabela já tenha sido criada anteriormente
 ALTER TABLE public.votes ADD COLUMN IF NOT EXISTS voter_name TEXT DEFAULT '';
 
--- 3. Habilitar Row Level Security (RLS) liberado
 ALTER TABLE public.candidates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.votes ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Allow public read candidates" ON public.candidates;
 CREATE POLICY "Allow public read candidates" ON public.candidates FOR SELECT USING (true);
+DROP POLICY IF EXISTS "Allow public insert candidates" ON public.candidates;
 CREATE POLICY "Allow public insert candidates" ON public.candidates FOR INSERT WITH CHECK (true);
+DROP POLICY IF EXISTS "Allow public update candidates" ON public.candidates;
 CREATE POLICY "Allow public update candidates" ON public.candidates FOR UPDATE USING (true);
+DROP POLICY IF EXISTS "Allow public delete candidates" ON public.candidates;
 CREATE POLICY "Allow public delete candidates" ON public.candidates FOR DELETE USING (true);
 
+DROP POLICY IF EXISTS "Allow public read votes" ON public.votes;
 CREATE POLICY "Allow public read votes" ON public.votes FOR SELECT USING (true);
+DROP POLICY IF EXISTS "Allow public insert votes" ON public.votes;
 CREATE POLICY "Allow public insert votes" ON public.votes FOR INSERT WITH CHECK (true);
+DROP POLICY IF EXISTS "Allow public update votes" ON public.votes;
 CREATE POLICY "Allow public update votes" ON public.votes FOR UPDATE USING (true);
+DROP POLICY IF EXISTS "Allow public delete votes" ON public.votes;
 CREATE POLICY "Allow public delete votes" ON public.votes FOR DELETE USING (true);
 
--- 4. Habilitar Realtime
-ALTER PUBLICATION supabase_realtime ADD TABLE public.candidates;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.votes;`;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND tablename = 'candidates') THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.candidates;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND tablename = 'votes') THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.votes;
+  END IF;
+END $$;`;
+
+  const SUPABASE_SEED_SQL = `-- SEED DAS 14 FANTASIAS OFICIAIS COM 0 VOTOS
+INSERT INTO public.candidates (id, name, costume_name, category, description, photos, votes, created_at)
+VALUES
+  ('cand_noiva_cadaver', 'Juliana Mendes', 'Noiva Cadáver Gótica', 'Terror Clássico', 'Vestido de noiva centenário rendado e esfarrapado, véu sombrio, maquiagem cadavérica azulada com buquê de rosas negras secas.', '["https://images.unsplash.com/photo-1509557965875-b88c97052f0e?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1572945281869-8269d0d9703f?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T20:00:00.000Z'),
+  ('cand_conde_dracula', 'Lucas Silveira', 'Lorde Drácula Vitoriano', 'Terror Clássico', 'Capa preta de veludo com gola alta escarlate, dentes caninos hiper-realistas, palidez vampírica e medalhão ancestral dos Cárpatos.', '["https://images.unsplash.com/photo-1603792907191-89e55f70071a?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1540555700478-4be289fbecef?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T20:10:00.000Z'),
+  ('cand_bruxa_salem', 'Beatriz Alencar', 'Bruxa Ancestral de Salem', 'Mítico & Sobrenatural', 'Túnica rústica de bruxaria ancestral, cajado com crânio entalhado em madeira negra, grimório de feitiços e olhos brancos assustadores.', '["https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T20:20:00.000Z'),
+  ('cand_palhaco_macabro', 'Diego Martinez', 'Palhaço Macabro do Circo Sombrio', 'Criativo & Engraçado', 'Traje circense vintage manchado, sorriso de látex rasgado de orelha a orelha, maquiagem teatral sinistra e balão vermelho ensanguentado.', '["https://images.unsplash.com/photo-1509248961158-e54f6934749c?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T20:30:00.000Z'),
+  ('cand_espantalho_assassino', 'Rafael Torres', 'Espantalho dos Milharais Malditos', 'Mais Assustador', 'Máscara costurada em estopa rústica e arame farpado, chapéu pontudo desgastado, foice metálica enferrujada e aura aterrorizante.', '["https://images.unsplash.com/photo-1572293007244-8b60335d2b7d?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1508700929628-666bc8bd84ea?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T20:40:00.000Z'),
+  ('cand_catrina_mexicana', 'Camila Rocha', 'La Catrina - Dama de la Muerte', 'Mítico & Sobrenatural', 'Pintura facial minuciosa de caveira mexicana com pedrarias pretas e douradas, tiara farta de flores de cempasúchil e traje bordado.', '["https://images.unsplash.com/photo-1508341591423-4347099e1f19?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1481819613568-3701cbc70156?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T20:50:00.000Z'),
+  ('cand_ceifador_morte', 'Marcos Vinícius', 'Ceifador da Meia-Noite (Grim Reaper)', 'Vilões & Cinema', 'Manto negro sem rosto com capuz profundo, garras esqueléticas articuladas e foice imponente de lâmina espectral.', '["https://images.unsplash.com/photo-1509198397868-475647b2a1e5?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1513151233558-d860c5398176?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T21:00:00.000Z'),
+  ('cand_feiticeira_sombras', 'Larissa Fernandes', 'Feiticeira das Sombras & Teias', 'Cosplay Sombrio', 'Corset rendado em teias de aranha com véu gótico de tule negro, tiara de chifres pontiagudos e amuleto luminescente.', '["https://images.unsplash.com/photo-1514533450685-4493e01d1fdc?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T21:10:00.000Z'),
+  ('cand_lobisomem_lua', 'Gabriel Duarte', 'Lobisomem da Lua de Sangue', 'Terror Clássico', 'Pelagem rústica realista, presas caninas afiadas, garras de besta demoníaca e olhos amarelos brilhantes sob a lua cheia.', '["https://images.unsplash.com/photo-1509114397022-ed747cca3f65?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1572945281869-8269d0d9703f?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T21:20:00.000Z'),
+  ('cand_rainha_vampira', 'Amanda Vasconcelos', 'Rainha Vampira Carmilla', 'Terror Clássico', 'Vestido imperial de veludo bordô com detalhes em ouro envelhecido, coroa gótica de espinhos e taça de sangue das trevas.', '["https://images.unsplash.com/photo-1534447677768-be436bb09401?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T21:30:00.000Z'),
+  ('cand_medico_peste', 'Thiago Alvarenga', 'Médico da Peste Negra (Plague Doctor)', 'Vilões & Cinema', 'Máscara alongada de bico de pássaro em couro envelhecido, sobretudo encerado, cartola alta e bastão com lanterna verde espectral.', '["https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1509557965875-b88c97052f0e?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T21:40:00.000Z'),
+  ('cand_zumbi_biohazard', 'Fernanda Siqueira', 'Zumbi Biohazard do Apocalipse', 'Mais Assustador', 'Macacão de contenção química rasgado, próteses de infecção necrosada hiper-realistas e lentes de contato esbranquiçadas sinistras.', '["https://images.unsplash.com/photo-1509248961158-e54f6934749c?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1572293007244-8b60335d2b7d?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T21:50:00.000Z'),
+  ('cand_mascarado_slasher', 'Rodrigo Lima', 'O Mascarado Sombrio (Slasher)', 'Vilões & Cinema', 'Macacão mecânico manchado de fuligem, máscara facial sinistra com marcas de combate e machado rústico estilizado.', '["https://images.unsplash.com/photo-1509198397868-475647b2a1e5?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1603792907191-89e55f70071a?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T22:00:00.000Z'),
+  ('cand_fada_sombria', 'Mariana Couto', 'Fada Sombria dos Pântanos', 'Mítico & Sobrenatural', 'Asas de inseto translúcidas e esfarrapadas em tons de ébano, coroa de galhos secos, maquiagem fosforescente e orquídeas negras.', '["https://images.unsplash.com/photo-1508341591423-4347099e1f19?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1514533450685-4493e01d1fdc?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T22:10:00.000Z')
+ON CONFLICT (id) DO UPDATE SET
+  name = EXCLUDED.name,
+  costume_name = EXCLUDED.costume_name,
+  category = EXCLUDED.category,
+  description = EXCLUDED.description,
+  photos = EXCLUDED.photos;`;
+
+  const SUPABASE_FULL_SQL = `-- ========================================================
+-- T99 HALLOWEEN - SUPABASE SCHEMA & SEED COMPLETO (14 FANTASIAS)
+-- Executar no SQL Editor do seu Supabase (http://192.168.3.108:8000)
+-- ========================================================
+
+` + SUPABASE_SCHEMA_SQL + `\n\n-- ========================================================\n` + SUPABASE_SEED_SQL;
+
+  const getActiveSqlScript = () => {
+    if (sqlModalTab === 'seed') return SUPABASE_SEED_SQL;
+    if (sqlModalTab === 'schema') return SUPABASE_SCHEMA_SQL;
+    return SUPABASE_FULL_SQL;
+  };
 
   const copySqlToClipboard = async () => {
     try {
-      await navigator.clipboard.writeText(SUPABASE_SQL_SCRIPT);
+      await navigator.clipboard.writeText(getActiveSqlScript());
       setSqlCopied(true);
       setTimeout(() => setSqlCopied(false), 2500);
     } catch {
       // fallback
     }
+  };
+
+  const handleDownloadSql = () => {
+    const blob = new Blob([getActiveSqlScript()], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = sqlModalTab === 'seed' ? 't99_seed_14_fantasias.sql' : 't99_supabase_completo_14_fantasias.sql';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // Direct Seed / Upload to Supabase Action
+  const handleUploadToSupabase = async () => {
+    try {
+      setIsUploadingToSupabase(true);
+      setSupabaseSyncResult(null);
+      const res = await uploadCandidatesToSupabase(INITIAL_REGISTERED_CANDIDATES);
+      if (res.success) {
+        setSupabaseSyncResult({
+          success: true,
+          message: `Sucesso! Todas as ${res.count} fantasias foram sincronizadas e salvas no Supabase (${SUPABASE_URL}).`,
+        });
+      } else {
+        const isMixedContent =
+          String(res.error).includes('Failed to fetch') ||
+          String(res.error).includes('NetworkError');
+        setSupabaseSyncResult({
+          success: false,
+          message: isMixedContent
+            ? `Seu navegador bloqueou a conexão HTTP interna com ${SUPABASE_URL} (bloqueio de segurança HTTPS -> HTTP). Para subir instantaneamente as 14 fantasias, clique no botão "Script SQL" abaixo, copie o comando e execute no SQL Editor do Supabase Studio!`
+            : `Aviso ao subir para o Supabase: ${res.error || 'Verifique se a rede local tem acesso a ' + SUPABASE_URL}. Use o Script SQL para rodar no Supabase Studio!`,
+        });
+      }
+    } catch (err: any) {
+      setSupabaseSyncResult({
+        success: false,
+        message: `Aviso: Seu navegador bloqueou a requisição direta para ${SUPABASE_URL}. Abra o Script SQL e execute no Supabase Studio para cadastrar as 14 fantasias com 1 clique.`,
+      });
+    } finally {
+      setIsUploadingToSupabase(false);
+    }
+  };
+
+  // Test connection to user's Supabase instance
+  const handleTestSupabase = async () => {
+    setIsTestingSupabase(true);
+    setSupabaseConnInfo(null);
+    try {
+      const res = await testSupabaseConnection();
+      setSupabaseConnInfo(res);
+    } catch (err: any) {
+      setSupabaseConnInfo({
+        connected: false,
+        error: 'Bloqueio de navegador HTTPS -> HTTP local (Mixed Content)',
+      });
+    } finally {
+      setIsTestingSupabase(false);
+    }
+  };
+
+  // Reload official 14 candidates into state
+  const handleReload14Candidates = () => {
+    const list = resetTo14OfficialCandidates();
+    setSuccessMsg(`14 fantasias oficiais recarregadas com sucesso na aplicação!`);
+    setTimeout(() => setSuccessMsg(null), 4000);
   };
 
   // Filtered votes by search query
@@ -541,6 +668,27 @@ ALTER PUBLICATION supabase_realtime ADD TABLE public.votes;`;
 
               {/* Utility Quick Actions */}
               <div className="flex flex-wrap items-center gap-2">
+                {/* SUBIR NO SUPABASE - USER REQUESTED ACTION */}
+                <button
+                  type="button"
+                  onClick={handleUploadToSupabase}
+                  disabled={isUploadingToSupabase}
+                  className="px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold font-cinzel flex items-center gap-1.5 cursor-pointer shadow-lg shadow-emerald-700/40 border border-emerald-400/50 transition-all disabled:opacity-50"
+                  title="Faz o upload das 14 fantasias oficiais diretamente no Supabase em http://192.168.3.108:8000"
+                >
+                  {isUploadingToSupabase ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Subindo ao Supabase...</span>
+                    </>
+                  ) : (
+                    <>
+                      <UploadCloud className="w-3.5 h-3.5 text-white" />
+                      <span>SUBIR NO SUPABASE (14 Fantasias)</span>
+                    </>
+                  )}
+                </button>
+
                 <button
                   type="button"
                   onClick={onLocalVoteCleared}
@@ -557,7 +705,7 @@ ALTER PUBLICATION supabase_realtime ADD TABLE public.votes;`;
                   className="px-3 py-1.5 rounded-lg bg-emerald-950/70 hover:bg-emerald-900 border border-emerald-500/50 text-emerald-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
                 >
                   <Code2 className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Script SQL</span>
+                  <span>Script SQL (14 Fantasias)</span>
                 </button>
 
                 <button
@@ -580,6 +728,59 @@ ALTER PUBLICATION supabase_realtime ADD TABLE public.votes;`;
                 </button>
               </div>
             </div>
+
+            {/* Supabase Upload / Sync Result Banner */}
+            {supabaseSyncResult && (
+              <div
+                className={`p-4 rounded-xl border text-xs font-medium flex items-start justify-between gap-3 ${
+                  supabaseSyncResult.success
+                    ? 'bg-emerald-950/80 border-emerald-500 text-emerald-200'
+                    : 'bg-amber-950/90 border-amber-500 text-amber-200'
+                }`}
+              >
+                <div className="flex items-start gap-2.5">
+                  {supabaseSyncResult.success ? (
+                    <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
+                  ) : (
+                    <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                  )}
+                  <div className="space-y-1.5">
+                    <p className="font-bold text-sm">{supabaseSyncResult.message}</p>
+                    <p className="text-[11px] opacity-80">
+                      Instância configurada: <code className="font-mono text-white">{SUPABASE_URL}</code>
+                    </p>
+                    {!supabaseSyncResult.success && (
+                      <div className="pt-1 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setShowSqlModal(true)}
+                          className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-md"
+                        >
+                          <Code2 className="w-3.5 h-3.5" />
+                          <span>ABRIR SCRIPT SQL DAS 14 FANTASIAS</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleDownloadSql}
+                          className="px-3 py-1.5 rounded-lg bg-black/60 hover:bg-black/80 border border-amber-400/50 text-amber-200 font-semibold text-xs flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>Baixar Arquivo .sql</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSupabaseSyncResult(null)}
+                  className="p-1 rounded text-gray-400 hover:text-white"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
 
             {/* TAB 1: AUDITORIA DE VOTOS POR NOME (REQUESTED FEATURE) */}
             {activeTab === 'votos' && (
@@ -807,7 +1008,98 @@ ALTER PUBLICATION supabase_realtime ADD TABLE public.votes;`;
 
             {/* TAB 2: GERENCIAR FANTASIAS (CANDIDATOS) */}
             {activeTab === 'candidatos' && (
-              <div className="space-y-8">
+              <div className="space-y-6">
+                {/* Supabase Integration & Quick Seed Card */}
+                <div className="p-4 sm:p-5 rounded-2xl bg-[#091512] border border-emerald-500/40 space-y-3 shadow-xl">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-emerald-500/20 pb-3">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-9 h-9 rounded-xl bg-emerald-950 border border-emerald-500/60 flex items-center justify-center text-emerald-400">
+                        <Server className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="font-cinzel font-bold text-sm text-emerald-300 flex items-center gap-2">
+                          <span>Supabase Self-Hosted</span>
+                          <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 text-[10px] font-mono border border-emerald-500/30">
+                            {SUPABASE_URL}
+                          </span>
+                        </h4>
+                        <p className="text-[11px] text-gray-400">
+                          Banco de dados para votos nominais e as 8 fantasias oficiais
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleTestSupabase}
+                        disabled={isTestingSupabase}
+                        className="px-3 py-1.5 rounded-lg bg-black/60 hover:bg-black/90 border border-emerald-500/40 text-emerald-300 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                      >
+                        {isTestingSupabase ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <RotateCcw className="w-3.5 h-3.5" />
+                        )}
+                        <span>Testar Conexão</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleUploadToSupabase}
+                        disabled={isUploadingToSupabase}
+                        className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold font-cinzel flex items-center gap-1.5 shadow-md shadow-emerald-700/40 cursor-pointer disabled:opacity-50 transition-all"
+                      >
+                        {isUploadingToSupabase ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <UploadCloud className="w-3.5 h-3.5" />
+                        )}
+                        <span>SUBIR 14 FANTASIAS AGORA</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleReload14Candidates}
+                        className="px-3 py-1.5 rounded-lg bg-purple-950/70 hover:bg-purple-900 border border-purple-500/50 text-purple-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
+                        title="Recarrega as 14 fantasias cadastradas na interface do app"
+                      >
+                        <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                        <span>Carregar 14 Fantasias no App</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setShowSqlModal(true)}
+                        className="px-3 py-1.5 rounded-lg bg-black/60 hover:bg-black/80 border border-emerald-400/50 text-emerald-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
+                      >
+                        <Code2 className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Copiar SQL</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {supabaseConnInfo && (
+                    <div className="text-xs p-2.5 rounded-lg bg-black/60 border border-emerald-500/30 flex items-center justify-between">
+                      <span>
+                        Status da Conexão:{' '}
+                        {supabaseConnInfo.connected ? (
+                          <strong className="text-emerald-400">
+                            ONLINE ({supabaseConnInfo.latencyMs}ms) • {supabaseConnInfo.count} candidatos na tabela
+                          </strong>
+                        ) : (
+                          <strong className="text-amber-400">
+                            Inacessível nesta rede: {supabaseConnInfo.error}
+                          </strong>
+                        )}
+                      </span>
+                      <span className="text-[10px] text-gray-400 hidden sm:inline">
+                        Dica: use na rede local (192.168.3.x)
+                      </span>
+                    </div>
+                  )}
+                </div>
+
                 {/* Candidate Registration / Edit Form */}
                 <div
                   ref={formRef}
@@ -1160,53 +1452,127 @@ ALTER PUBLICATION supabase_realtime ADD TABLE public.votes;`;
       {/* Supabase SQL Script Viewer Modal */}
       {showSqlModal && (
         <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/95">
-          <div className="max-w-2xl w-full p-6 rounded-2xl bg-[#0f091c] border-2 border-emerald-500 text-left space-y-4 shadow-2xl">
+          <div className="max-w-3xl w-full p-6 rounded-2xl bg-[#0b0c16] border-2 border-emerald-500 text-left space-y-4 shadow-2xl">
             <div className="flex items-center justify-between border-b border-emerald-500/30 pb-3">
               <div className="flex items-center gap-2 text-emerald-400">
                 <Code2 className="w-5 h-5" />
                 <h3 className="font-cinzel font-bold text-base text-white">
-                  Script SQL para seu Supabase Self-Hosted
+                  Scripts SQL para Supabase Self-Hosted
                 </h3>
               </div>
               <button
                 onClick={() => setShowSqlModal(false)}
-                className="p-1 rounded text-gray-400 hover:text-white"
+                className="p-1 rounded text-gray-400 hover:text-white cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <p className="text-xs text-gray-300">
-              Copie este comando e execute no <strong>SQL Editor</strong> do seu Supabase (<code className="text-emerald-300">http://192.168.3.108:8000</code>) para criar ou atualizar as tabelas <code className="text-orange-300">candidates</code> e <code className="text-orange-300">votes</code>:
-            </p>
-
-            <pre className="p-4 rounded-xl bg-black border border-emerald-500/30 text-[11px] font-mono text-emerald-300 overflow-x-auto max-h-60">
-              {SUPABASE_SQL_SCRIPT}
-            </pre>
-
-            <div className="flex items-center justify-between gap-3 pt-2">
+            {/* Script Tab Switcher */}
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={copySqlToClipboard}
-                className="py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold font-cinzel flex items-center gap-2 cursor-pointer shadow-lg shadow-emerald-600/30 transition-all"
+                onClick={() => setSqlModalTab('full')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  sqlModalTab === 'full'
+                    ? 'bg-emerald-600 text-white shadow-md'
+                    : 'bg-black/60 text-gray-400 hover:text-white border border-white/10'
+                }`}
               >
-                {sqlCopied ? (
-                  <>
-                    <Check className="w-4 h-4 text-white" />
-                    <span>COPIADO PARA A ÁREA DE TRANSFERÊNCIA!</span>
-                  </>
-                ) : (
-                  <>
-                    <Copy className="w-4 h-4" />
-                    <span>COPIAR COMANDO SQL</span>
-                  </>
-                )}
+                Completo (Tabelas + 14 Fantasias)
               </button>
 
               <button
                 type="button"
+                onClick={() => setSqlModalTab('seed')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  sqlModalTab === 'seed'
+                    ? 'bg-emerald-600 text-white shadow-md'
+                    : 'bg-black/60 text-gray-400 hover:text-white border border-white/10'
+                }`}
+              >
+                Apenas Seed das 14 Fantasias (INSERT)
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSqlModalTab('schema')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  sqlModalTab === 'schema'
+                    ? 'bg-emerald-600 text-white shadow-md'
+                    : 'bg-black/60 text-gray-400 hover:text-white border border-white/10'
+                }`}
+              >
+                Apenas Tabelas & RLS
+              </button>
+            </div>
+
+            {/* Mixed Content / Fetch Explanatory Banner */}
+            <div className="p-3 rounded-xl bg-amber-950/40 border border-amber-500/40 text-xs text-amber-200/90 space-y-1">
+              <p className="font-bold text-amber-300 flex items-center gap-1.5">
+                <AlertTriangle className="w-4 h-4 text-amber-400" />
+                <span>Por que deu erro "Failed to fetch" ao clicar no botão?</span>
+              </p>
+              <p className="text-[11px] leading-relaxed">
+                Este aplicativo está hospedado em <strong>HTTPS seguro</strong> na nuvem, enquanto o seu Supabase está em <strong>HTTP interno ({SUPABASE_URL})</strong>. Por normas de segurança internacionais (Mixed Content / Private Network), navegadores bloqueiam requisições HTTPS para HTTP privado.
+              </p>
+              <p className="text-[11px] text-emerald-300 font-semibold">
+                👉 <strong>Solução Rápida (1 Minuto):</strong> Copie o SQL abaixo ou baixe o arquivo <code className="font-mono text-white">.sql</code> e cole no <strong>SQL Editor</strong> do seu painel Supabase (<code className="font-mono text-white">{SUPABASE_URL}</code>)!
+              </p>
+            </div>
+
+            <p className="text-xs text-gray-300">
+              Script gerado pronto para rodar no Supabase Studio:
+            </p>
+
+            <pre className="p-4 rounded-xl bg-black border border-emerald-500/30 text-[11px] font-mono text-emerald-300 overflow-x-auto max-h-72 select-all">
+              {getActiveSqlScript()}
+            </pre>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={copySqlToClipboard}
+                  className="py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold font-cinzel flex items-center gap-2 cursor-pointer shadow-lg shadow-emerald-600/30 transition-all"
+                >
+                  {sqlCopied ? (
+                    <>
+                      <Check className="w-4 h-4 text-white" />
+                      <span>COPIADO PARA A ÁREA DE TRANSFERÊNCIA!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-4 h-4" />
+                      <span>COPIAR SQL DAS 14 FANTASIAS</span>
+                    </>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleDownloadSql}
+                  className="py-2.5 px-4 rounded-xl bg-black/70 hover:bg-black/90 border border-emerald-400/50 text-emerald-300 text-xs font-bold flex items-center gap-2 cursor-pointer transition-colors"
+                >
+                  <Download className="w-4 h-4 text-emerald-400" />
+                  <span>BAIXAR ARQUIVO .SQL</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleUploadToSupabase}
+                  disabled={isUploadingToSupabase}
+                  className="py-2.5 px-4 rounded-xl bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-500 hover:to-emerald-500 text-white text-xs font-bold font-cinzel flex items-center gap-2 cursor-pointer shadow-lg shadow-teal-600/30 transition-all disabled:opacity-50"
+                >
+                  <UploadCloud className="w-4 h-4" />
+                  <span>Tentar Subida Direta</span>
+                </button>
+              </div>
+
+              <button
+                type="button"
                 onClick={() => setShowSqlModal(false)}
-                className="py-2.5 px-4 rounded-xl border border-gray-600 text-gray-300 hover:text-white text-xs font-bold"
+                className="py-2.5 px-4 rounded-xl border border-gray-600 text-gray-300 hover:text-white text-xs font-bold cursor-pointer"
               >
                 Fechar
               </button>
