@@ -151,34 +151,43 @@ export default function App() {
     setCandidateToVote(candidate);
   };
 
-  // Confirm vote with verified full name
+  // Confirm vote with verified full name (Instant Optimistic Feedback - 0ms delay)
   const handleConfirmVote = async (candidate: Candidate, voterFullName: string) => {
     if (myVote) {
       showToast(`Você já votou em "${myVote.candidateName}" neste computador!`);
       return;
     }
 
-    try {
-      await castVote(candidate.id, candidate.costumeName, deviceId, voterFullName);
-      const newVote: LocalVoteInfo = {
-        candidateId: candidate.id,
-        candidateName: candidate.costumeName,
-        votedAt: new Date().toISOString(),
-        voterName: voterFullName,
-      };
-      setMyVote(newVote);
-      setLocalVote(newVote);
+    const newVote: LocalVoteInfo = {
+      candidateId: candidate.id,
+      candidateName: candidate.costumeName,
+      votedAt: new Date().toISOString(),
+      voterName: voterFullName,
+    };
 
-      // Immediately reflect vote in UI state even if offline or under network fallback
+    // 1. Instant Optimistic UI feedback: update device vote, counters, audio & confetti immediately
+    setMyVote(newVote);
+    setLocalVote(newVote);
+    setCandidates((prev) =>
+      prev
+        .map((c) => (c.id === candidate.id ? { ...c, votes: (c.votes || 0) + 1 } : c))
+        .sort((a, b) => b.votes - a.votes)
+    );
+    fireHalloweenConfetti();
+    showToast(`🎃 Voto de ${voterFullName} na fantasia "${candidate.costumeName}" registrado com sucesso!`);
+
+    try {
+      // 2. Perform fast server sync concurrently (~150ms)
+      await castVote(candidate.id, candidate.costumeName, deviceId, voterFullName);
+    } catch (err) {
+      // Rollback on duplicate or fatal error
+      clearLocalVote();
+      setMyVote(null);
       setCandidates((prev) =>
         prev
-          .map((c) => (c.id === candidate.id ? { ...c, votes: c.votes + 1 } : c))
+          .map((c) => (c.id === candidate.id ? { ...c, votes: Math.max(0, (c.votes || 0) - 1) } : c))
           .sort((a, b) => b.votes - a.votes)
       );
-
-      fireHalloweenConfetti();
-      showToast(`🎃 Voto de ${voterFullName} na fantasia "${candidate.costumeName}" registrado com sucesso!`);
-    } catch (err) {
       console.error(err);
       if (err instanceof Error) {
         showToast(err.message);

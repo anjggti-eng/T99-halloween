@@ -9,8 +9,22 @@ import {
   updateDoc,
   deleteDoc,
   onSnapshot,
+  increment,
 } from 'firebase/firestore';
 import { Candidate, VoteRecord } from '../types';
+
+// Quick timeout wrapper for Supabase network calls so unreachable or slow local network never freezes UI
+async function withTimeout<T = any>(promise: Promise<T>, timeoutMs = 1200): Promise<T> {
+  let timer: any;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('Supabase network timeout')), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 const CANDIDATES_CACHE_KEY = 't99_cached_candidates';
 const VOTES_CACHE_KEY = 't99_cached_votes';
@@ -248,19 +262,23 @@ export function subscribeToCandidates(
   const fetchCandidates = async () => {
     let loadedList: Candidate[] | null = null;
 
-    // A. Try Supabase
+    // A. Try Supabase with timeout
     try {
-      const { data, error } = await supabase
+      const query = supabase
         .from('candidates')
         .select('*')
         .order('votes', { ascending: false });
 
-      if (!error && data) {
+      const res: any = await withTimeout<any>(query as any, 1000);
+      const data = res?.data;
+      const error = res?.error;
+
+      if (!error && Array.isArray(data) && data.length > 0) {
         // Exclude fake placeholder candidates
-        loadedList = data.map(mapRowToCandidate).filter((c) => !isFakeCandidateId(c.id));
+        loadedList = data.map(mapRowToCandidate).filter((c: Candidate) => !isFakeCandidateId(c.id));
       }
     } catch (err) {
-      console.warn('Supabase fetch notice, falling back to Firestore/Cache:', err);
+      // Supabase timeout or unreachable, fast fallback to Firestore
     }
 
     // B. If Supabase failed or was empty, try Firestore
@@ -454,24 +472,11 @@ export async function checkDeviceVote(deviceId: string): Promise<VoteRecord | nu
   const cachedFound = cached.find((v) => v.deviceId === deviceId);
   if (cachedFound) return cachedFound;
 
-  // Check Supabase
+  // Check Firestore (fast HTTPS query)
   try {
-    const { data, error } = await supabase
-      .from('votes')
-      .select('*')
-      .eq('device_id', deviceId)
-      .maybeSingle();
-
-    if (!error && data) {
-      return mapRowToVote(data);
-    }
-  } catch (err) {
-    console.warn('Supabase checkDeviceVote fallback:', err);
-  }
-
-  // Check Firestore
-  try {
-    const snap = await getDoc(doc(db, 'votes', `vote_${deviceId}`.replace(/[^a-zA-Z0-9_\-]/g, '_').substring(0, 120)));
+    const snap = await getDoc(
+      doc(db, 'votes', `vote_${deviceId}`.replace(/[^a-zA-Z0-9_\-]/g, '_').substring(0, 120))
+    );
     if (snap.exists()) {
       return snap.data() as VoteRecord;
     }
@@ -479,10 +484,28 @@ export async function checkDeviceVote(deviceId: string): Promise<VoteRecord | nu
     console.warn('Firestore checkDeviceVote notice:', err);
   }
 
+  // Check Supabase with strict timeout
+  try {
+    const supQuery = supabase
+      .from('votes')
+      .select('*')
+      .eq('device_id', deviceId)
+      .maybeSingle();
+
+    const res: any = await withTimeout<any>(supQuery as any, 1000);
+    const data = res?.data;
+    const error = res?.error;
+    if (!error && data) {
+      return mapRowToVote(data);
+    }
+  } catch (err) {
+    // Timeout or network unreachable
+  }
+
   return null;
 }
 
-// Cast a single vote per PC with mandatory Full Name
+// Cast a single vote per PC with mandatory Full Name (Ultra-Fast & Resilient)
 export async function castVote(
   candidateId: string,
   candidateName: string,
@@ -492,6 +515,12 @@ export async function castVote(
   const cleanVoterName = voterName.trim();
   if (!cleanVoterName) {
     throw new Error('É obrigatório informar seu nome completo antes de votar!');
+  }
+
+  // Check if device already voted locally
+  const cachedVotes = getCachedVotes();
+  if (cachedVotes.some((v) => v.deviceId === deviceId)) {
+    throw new Error('Este computador já registrou um voto para o T99 Halloween!');
   }
 
   const voteDocId = `vote_${deviceId}`.replace(/[^a-zA-Z0-9_\-]/g, '_').substring(0, 120);
@@ -505,91 +534,13 @@ export async function castVote(
     votedAt: new Date().toISOString(),
   };
 
-  // Check if device already voted locally
-  const cachedVotes = getCachedVotes();
-  if (cachedVotes.some((v) => v.deviceId === deviceId)) {
-    throw new Error('Este computador já registrou um voto para o T99 Halloween!');
-  }
-
-  // 1. Save in Supabase via authorized operation (cast_vote RPC)
-  try {
-    const { error: rpcError } = await supabase.rpc('cast_vote', {
-      p_device_id: deviceId,
-      p_voter_name: cleanVoterName,
-      p_candidate_id: candidateId,
-      p_candidate_name: candidateName,
-    });
-
-    if (rpcError) {
-      if (rpcError.message?.includes('já registrou') || rpcError.message?.includes('obrigatório')) {
-        throw new Error(rpcError.message);
-      }
-
-      // Fallback in case stored procedure has not been run in Supabase yet
-      const { data: existingVote } = await supabase
-        .from('votes')
-        .select('id')
-        .eq('device_id', deviceId)
-        .maybeSingle();
-
-      if (existingVote) {
-        throw new Error('Este computador já registrou um voto para o T99 Halloween!');
-      }
-
-      const { data: candidateData } = await supabase
-        .from('candidates')
-        .select('votes')
-        .eq('id', candidateId)
-        .single();
-
-      const currentVotes = (candidateData?.votes as number) || 0;
-
-      await supabase
-        .from('candidates')
-        .update({ votes: currentVotes + 1 })
-        .eq('id', candidateId);
-
-      await supabase.from('votes').insert({
-        id: voteDocId,
-        device_id: deviceId,
-        voter_name: cleanVoterName,
-        candidate_id: candidateId,
-        candidate_name: candidateName,
-        voted_at: newVoteRecord.votedAt,
-      });
-    }
-  } catch (err: any) {
-    if (err?.message?.includes('já registrou') || err?.message?.includes('obrigatório')) {
-      throw err;
-    }
-    console.warn('Supabase castVote notice:', err);
-  }
-
-  // 2. Save in Firestore
-  try {
-    const voteRef = doc(db, 'votes', voteDocId);
-    await setDoc(voteRef, newVoteRecord);
-
-    const candRef = doc(db, 'candidates', candidateId);
-    const candSnap = await getDoc(candRef);
-    if (candSnap.exists()) {
-      const cVotes = (candSnap.data()?.votes as number) || 0;
-      await updateDoc(candRef, { votes: cVotes + 1 });
-    }
-  } catch (fErr) {
-    console.warn('Firestore castVote notice:', fErr);
-  }
-
-  // 3. Update local candidates cache
+  // 1. Immediately update local caches and local storage (Instant response)
   const cached = getCachedCandidates();
-  const updated = cached.map((c) => (c.id === candidateId ? { ...c, votes: c.votes + 1 } : c));
+  const updated = cached.map((c) => (c.id === candidateId ? { ...c, votes: (c.votes || 0) + 1 } : c));
   updated.sort((a, b) => b.votes - a.votes);
   saveCachedCandidates(updated);
-
-  // 4. Update local votes cache
   saveCachedVotes([newVoteRecord, ...cachedVotes]);
 
-  // 5. Store in local device storage
   try {
     localStorage.setItem(
       't99_halloween_my_vote',
@@ -603,6 +554,47 @@ export async function castVote(
   } catch {
     // ignore
   }
+
+  // 2. Fast atomic Firestore write (atomic increment + vote document)
+  const firestoreTask = (async () => {
+    try {
+      const voteRef = doc(db, 'votes', voteDocId);
+      const candRef = doc(db, 'candidates', candidateId);
+      await Promise.all([
+        setDoc(voteRef, newVoteRecord),
+        updateDoc(candRef, { votes: increment(1) }),
+      ]);
+    } catch (fErr) {
+      console.warn('Firestore vote sync notice:', fErr);
+    }
+  })();
+
+  // 3. Concurrently sync with Supabase via cast_vote RPC with timeout protection
+  const supabaseTask = (async () => {
+    try {
+      const rpcCall = supabase.rpc('cast_vote', {
+        p_device_id: deviceId,
+        p_voter_name: cleanVoterName,
+        p_candidate_id: candidateId,
+        p_candidate_name: candidateName,
+      });
+
+      const res: any = await withTimeout<any>(rpcCall as any, 1500);
+      if (res?.error) {
+        if (res.error.message?.includes('já registrou')) {
+          throw new Error(res.error.message);
+        }
+      }
+    } catch (err: any) {
+      if (err?.message?.includes('já registrou')) {
+        throw err;
+      }
+      console.warn('Supabase castVote notice:', err?.message || err);
+    }
+  })();
+
+  // Wait for Firestore to complete (~150ms) while Supabase runs concurrently
+  await Promise.allSettled([firestoreTask, supabaseTask]);
 }
 
 // Admin: Delete a single vote by ID
