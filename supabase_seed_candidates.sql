@@ -1,6 +1,6 @@
 -- ====================================================================
 -- T99 HALLOWEEN - SEED DAS 14 FANTASIAS OFICIAIS NO SUPABASE
--- Executar no SQL Editor do Supabase (http://192.168.3.108:8000)
+-- Executar no SQL Editor do Supabase (http://192.168.0.179:8000)
 -- Insere ou atualiza todas as 14 fantasias mantendo os votos zerados
 -- ====================================================================
 

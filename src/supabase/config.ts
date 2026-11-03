@@ -4,7 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 export const SUPABASE_URL =
   (typeof import.meta !== 'undefined' && import.meta.env?.VITE_SUPABASE_URL) ||
   (typeof import.meta !== 'undefined' && import.meta.env?.NEXT_PUBLIC_SUPABASE_URL) ||
-  'http://192.168.3.108:8000';
+  'http://192.168.0.179:8000';
 
 export const SUPABASE_ANON_KEY =
   (typeof import.meta !== 'undefined' && import.meta.env?.VITE_SUPABASE_ANON_KEY) ||

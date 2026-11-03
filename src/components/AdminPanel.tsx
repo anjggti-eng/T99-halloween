@@ -198,7 +198,7 @@ ON CONFLICT (id) DO UPDATE SET
 
   const SUPABASE_FULL_SQL = `-- ========================================================
 -- T99 HALLOWEEN - SUPABASE SCHEMA & SEED COMPLETO (14 FANTASIAS)
--- Executar no SQL Editor do seu Supabase (http://192.168.3.108:8000)
+-- Executar no SQL Editor do seu Supabase (http://192.168.0.179:8000)
 -- ========================================================
 
 ` + SUPABASE_SCHEMA_SQL + `\n\n-- ========================================================\n` + SUPABASE_SEED_SQL;
@@ -1024,7 +1024,7 @@ ON CONFLICT (id) DO UPDATE SET
                           </span>
                         </h4>
                         <p className="text-[11px] text-gray-400">
-                          Banco de dados para votos nominais e as 8 fantasias oficiais
+                          Banco de dados para votos nominais e as 14 fantasias oficiais
                         </p>
                       </div>
                     </div>
@@ -1094,7 +1094,7 @@ ON CONFLICT (id) DO UPDATE SET
                         )}
                       </span>
                       <span className="text-[10px] text-gray-400 hidden sm:inline">
-                        Dica: use na rede local (192.168.3.x)
+                        Dica: use na rede local (192.168.0.x)
                       </span>
                     </div>
                   )}

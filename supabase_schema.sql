@@ -1,6 +1,6 @@
 -- ========================================================
 -- T99 HALLOWEEN - SUPABASE SCHEMA FOR SELF-HOSTED INSTANCE
--- Executar no SQL Editor do seu Supabase (http://192.168.3.108:8000)
+-- Executar no SQL Editor do seu Supabase (http://192.168.0.179:8000)
 -- Cria tabelas, RLS, Realtime e insere as 14 Fantasias Oficiais
 -- ========================================================
 
