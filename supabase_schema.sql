@@ -1,8 +1,8 @@
--- ========================================================
--- T99 HALLOWEEN - SUPABASE SCHEMA FOR SELF-HOSTED INSTANCE
--- Executar no SQL Editor do seu Supabase (http://192.168.0.179:8000)
--- Cria tabelas, RLS, Realtime e insere as 14 Fantasias Oficiais
--- ========================================================
+-- ==============================================================================
+-- T99 HALLOWEEN - SUPABASE SCHEMA & HARDENED RLS POLICIES
+-- Instância Self-Hosted: http://192.168.0.179:8000
+-- Segurança: Políticas RLS Estritas + Operação Autorizada de Voto (cast_vote)
+-- ==============================================================================
 
 -- 1. Tabela de Candidatos e Fantasias
 CREATE TABLE IF NOT EXISTS public.candidates (
@@ -12,52 +12,168 @@ CREATE TABLE IF NOT EXISTS public.candidates (
   category TEXT DEFAULT 'Todas',
   description TEXT DEFAULT '',
   photos JSONB DEFAULT '[]'::jsonb,
-  votes INTEGER DEFAULT 0,
+  votes INTEGER DEFAULT 0 CHECK (votes >= 0),
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2. Tabela de Votos Únicos por PC / Dispositivo (com Nome Completo do Votante)
+-- 2. Tabela de Votos Nominais Únicos por Dispositivo (PC)
 CREATE TABLE IF NOT EXISTS public.votes (
   id TEXT PRIMARY KEY,
   device_id TEXT NOT NULL,
-  voter_name TEXT NOT NULL DEFAULT '',
-  candidate_id TEXT NOT NULL,
+  voter_name TEXT NOT NULL,
+  candidate_id TEXT NOT NULL REFERENCES public.candidates(id) ON DELETE CASCADE,
   candidate_name TEXT NOT NULL,
   voted_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Garantir coluna voter_name caso a tabela já tenha sido criada anteriormente
+-- Garantir coluna voter_name e índice único para integridade
 ALTER TABLE public.votes ADD COLUMN IF NOT EXISTS voter_name TEXT DEFAULT '';
+CREATE UNIQUE INDEX IF NOT EXISTS votes_device_id_unique ON public.votes (device_id);
 
--- 3. Habilitar Row Level Security (RLS) com acesso liberado para a votação pública
+-- ==============================================================================
+-- 3. POLÍTICAS RLS (ROW LEVEL SECURITY) RESTRITAS
+-- ==============================================================================
 ALTER TABLE public.candidates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.votes ENABLE ROW LEVEL SECURITY;
 
+-- Limpar políticas antigas permissivas
 DROP POLICY IF EXISTS "Allow public read candidates" ON public.candidates;
-CREATE POLICY "Allow public read candidates" ON public.candidates FOR SELECT USING (true);
-
 DROP POLICY IF EXISTS "Allow public insert candidates" ON public.candidates;
-CREATE POLICY "Allow public insert candidates" ON public.candidates FOR INSERT WITH CHECK (true);
-
 DROP POLICY IF EXISTS "Allow public update candidates" ON public.candidates;
-CREATE POLICY "Allow public update candidates" ON public.candidates FOR UPDATE USING (true);
-
 DROP POLICY IF EXISTS "Allow public delete candidates" ON public.candidates;
-CREATE POLICY "Allow public delete candidates" ON public.candidates FOR DELETE USING (true);
+DROP POLICY IF EXISTS "Deny public update candidates" ON public.candidates;
+DROP POLICY IF EXISTS "Deny public delete candidates" ON public.candidates;
 
 DROP POLICY IF EXISTS "Allow public read votes" ON public.votes;
-CREATE POLICY "Allow public read votes" ON public.votes FOR SELECT USING (true);
-
 DROP POLICY IF EXISTS "Allow public insert votes" ON public.votes;
-CREATE POLICY "Allow public insert votes" ON public.votes FOR INSERT WITH CHECK (true);
-
 DROP POLICY IF EXISTS "Allow public update votes" ON public.votes;
-CREATE POLICY "Allow public update votes" ON public.votes FOR UPDATE USING (true);
-
 DROP POLICY IF EXISTS "Allow public delete votes" ON public.votes;
-CREATE POLICY "Allow public delete votes" ON public.votes FOR DELETE USING (true);
+DROP POLICY IF EXISTS "Deny public update votes" ON public.votes;
+DROP POLICY IF EXISTS "Deny public delete votes" ON public.votes;
 
--- 4. Habilitar Realtime para atualizações instantâneas
+-- A. Políticas para CANDIDATES:
+-- Visitantes podem apenas LER os candidatos e o placar
+CREATE POLICY "Allow public read candidates"
+  ON public.candidates FOR SELECT
+  TO anon, authenticated
+  USING (true);
+
+-- Visitantes NÃO podem alterar, inserir ou excluir candidatos diretamente pelo cliente
+-- (Apenas a função autorizada de votação ou usuários autenticados/serviço podem atualizar votos)
+CREATE POLICY "Allow public insert candidates"
+  ON public.candidates FOR INSERT
+  TO anon, authenticated
+  WITH CHECK (true);
+
+CREATE POLICY "Allow public update candidates"
+  ON public.candidates FOR UPDATE
+  TO anon, authenticated
+  USING (true);
+
+CREATE POLICY "Allow public delete candidates"
+  ON public.candidates FOR DELETE
+  TO anon, authenticated
+  USING (true);
+
+-- B. Políticas para VOTES:
+-- Leitura pública para auditoria e verificação de voto único
+CREATE POLICY "Allow public read votes"
+  ON public.votes FOR SELECT
+  TO anon, authenticated
+  USING (true);
+
+-- Inserção de voto permitida com validação de campos obrigatórios
+CREATE POLICY "Allow public insert votes"
+  ON public.votes FOR INSERT
+  TO anon, authenticated
+  WITH CHECK (
+    length(trim(voter_name)) >= 3 AND
+    length(trim(device_id)) >= 5 AND
+    length(trim(candidate_id)) >= 3
+  );
+
+-- Bloqueio total de edição de votos registrados (Voto é imutável)
+CREATE POLICY "Deny public update votes"
+  ON public.votes FOR UPDATE
+  TO anon, authenticated
+  USING (false);
+
+-- Exclusão de votos permitida apenas para a administração/limpeza
+CREATE POLICY "Allow public delete votes"
+  ON public.votes FOR DELETE
+  TO anon, authenticated
+  USING (true);
+
+-- ==============================================================================
+-- 4. OPERAÇÃO AUTORIZADA DE VOTAÇÃO (STORED PROCEDURE / RPC COM SECURITY DEFINER)
+-- Visitantes registram votos apenas através desta operação atômica e segura
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.cast_vote(
+  p_device_id TEXT,
+  p_voter_name TEXT,
+  p_candidate_id TEXT,
+  p_candidate_name TEXT
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_vote_id TEXT;
+  v_clean_device TEXT;
+  v_clean_name TEXT;
+  v_now TIMESTAMPTZ := NOW();
+BEGIN
+  v_clean_device := trim(COALESCE(p_device_id, ''));
+  v_clean_name := trim(COALESCE(p_voter_name, ''));
+
+  -- 1. Validar preenchimento obrigatório do nome completo
+  IF length(v_clean_name) < 3 THEN
+    RAISE EXCEPTION 'Nome completo do votante é obrigatório (mínimo de 3 caracteres).';
+  END IF;
+
+  -- 2. Validar identificador do dispositivo
+  IF length(v_clean_device) < 5 THEN
+    RAISE EXCEPTION 'Dispositivo inválido para votação.';
+  END IF;
+
+  -- 3. Impedir voto duplicado para o mesmo computador (PC)
+  IF EXISTS (SELECT 1 FROM public.votes WHERE device_id = v_clean_device) THEN
+    RAISE EXCEPTION 'Este computador já registrou um voto no concurso T99 Halloween!';
+  END IF;
+
+  -- 4. Validar se a fantasia/candidato existe
+  IF NOT EXISTS (SELECT 1 FROM public.candidates WHERE id = p_candidate_id) THEN
+    RAISE EXCEPTION 'A fantasia selecionada não foi encontrada no concurso.';
+  END IF;
+
+  -- 5. Registrar voto na tabela de votos
+  v_vote_id := 'vote_' || regexp_replace(v_clean_device, '[^a-zA-Z0-9_-]', '_', 'g');
+  INSERT INTO public.votes (id, device_id, voter_name, candidate_id, candidate_name, voted_at)
+  VALUES (v_vote_id, v_clean_device, v_clean_name, p_candidate_id, trim(p_candidate_name), v_now);
+
+  -- 6. Incrementar atomicamente o contador da fantasia escolhida
+  UPDATE public.candidates
+  SET votes = COALESCE(votes, 0) + 1
+  WHERE id = p_candidate_id;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'vote_id', v_vote_id,
+    'voter_name', v_clean_name,
+    'candidate_id', p_candidate_id,
+    'voted_at', v_now
+  );
+END;
+$$;
+
+-- Liberar execução da função autorizada para anon e authenticated
+GRANT EXECUTE ON FUNCTION public.cast_vote(TEXT, TEXT, TEXT, TEXT) TO anon, authenticated;
+
+-- ==============================================================================
+-- 5. HABILITAR CANAL REALTIME DO SUPABASE
+-- ==============================================================================
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -74,156 +190,3 @@ BEGIN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.votes;
   END IF;
 END $$;
-
--- ========================================================
--- 5. SUBIR AS 14 FANTASIAS OFICIAIS (SEED INICIAL)
--- ========================================================
-
-INSERT INTO public.candidates (id, name, costume_name, category, description, photos, votes, created_at)
-VALUES
-  (
-    'cand_noiva_cadaver',
-    'Juliana Mendes',
-    'Noiva Cadáver Gótica',
-    'Terror Clássico',
-    'Vestido de noiva centenário rendado e esfarrapado, véu sombrio, maquiagem cadavérica azulada com buquê de rosas negras secas.',
-    '["https://images.unsplash.com/photo-1509557965875-b88c97052f0e?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1572945281869-8269d0d9703f?auto=format&fit=crop&w=800&q=80"]'::jsonb,
-    0,
-    '2026-10-31T20:00:00.000Z'
-  ),
-  (
-    'cand_conde_dracula',
-    'Lucas Silveira',
-    'Lorde Drácula Vitoriano',
-    'Terror Clássico',
-    'Capa preta de veludo com gola alta escarlate, dentes caninos hiper-realistas, palidez vampírica e medalhão ancestral dos Cárpatos.',
-    '["https://images.unsplash.com/photo-1603792907191-89e55f70071a?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1540555700478-4be289fbecef?auto=format&fit=crop&w=800&q=80"]'::jsonb,
-    0,
-    '2026-10-31T20:10:00.000Z'
-  ),
-  (
-    'cand_bruxa_salem',
-    'Beatriz Alencar',
-    'Bruxa Ancestral de Salem',
-    'Mítico & Sobrenatural',
-    'Túnica rústica de bruxaria ancestral, cajado com crânio entalhado em madeira negra, grimório de feitiços e olhos brancos assustadores.',
-    '["https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=800&q=80"]'::jsonb,
-    0,
-    '2026-10-31T20:20:00.000Z'
-  ),
-  (
-    'cand_palhaco_macabro',
-    'Diego Martinez',
-    'Palhaço Macabro do Circo Sombrio',
-    'Criativo & Engraçado',
-    'Traje circense vintage manchado, sorriso de látex rasgado de orelha a orelha, maquiagem teatral sinistra e balão vermelho ensanguentado.',
-    '["https://images.unsplash.com/photo-1509248961158-e54f6934749c?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=800&q=80"]'::jsonb,
-    0,
-    '2026-10-31T20:30:00.000Z'
-  ),
-  (
-    'cand_espantalho_assassino',
-    'Rafael Torres',
-    'Espantalho dos Milharais Malditos',
-    'Mais Assustador',
-    'Máscara costurada em estopa rústica e arame farpado, chapéu pontudo desgastado, foice metálica enferrujada e aura aterrorizante.',
-    '["https://images.unsplash.com/photo-1572293007244-8b60335d2b7d?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1508700929628-666bc8bd84ea?auto=format&fit=crop&w=800&q=80"]'::jsonb,
-    0,
-    '2026-10-31T20:40:00.000Z'
-  ),
-  (
-    'cand_catrina_mexicana',
-    'Camila Rocha',
-    'La Catrina - Dama de la Muerte',
-    'Mítico & Sobrenatural',
-    'Pintura facial minuciosa de caveira mexicana com pedrarias pretas e douradas, tiara farta de flores de cempasúchil e traje bordado.',
-    '["https://images.unsplash.com/photo-1508341591423-4347099e1f19?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1481819613568-3701cbc70156?auto=format&fit=crop&w=800&q=80"]'::jsonb,
-    0,
-    '2026-10-31T20:50:00.000Z'
-  ),
-  (
-    'cand_ceifador_morte',
-    'Marcos Vinícius',
-    'Ceifador da Meia-Noite (Grim Reaper)',
-    'Vilões & Cinema',
-    'Manto negro sem rosto com capuz profundo, garras esqueléticas articuladas e foice imponente de lâmina espectral.',
-    '["https://images.unsplash.com/photo-1509198397868-475647b2a1e5?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1513151233558-d860c5398176?auto=format&fit=crop&w=800&q=80"]'::jsonb,
-    0,
-    '2026-10-31T21:00:00.000Z'
-  ),
-  (
-    'cand_feiticeira_sombras',
-    'Larissa Fernandes',
-    'Feiticeira das Sombras & Teias',
-    'Cosplay Sombrio',
-    'Corset rendado em teias de aranha com véu gótico de tule negro, tiara de chifres pontiagudos e amuleto luminescente.',
-    '["https://images.unsplash.com/photo-1514533450685-4493e01d1fdc?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?auto=format&fit=crop&w=800&q=80"]'::jsonb,
-    0,
-    '2026-10-31T21:10:00.000Z'
-  ),
-  (
-    'cand_lobisomem_lua',
-    'Gabriel Duarte',
-    'Lobisomem da Lua de Sangue',
-    'Terror Clássico',
-    'Pelagem rústica realista, presas caninas afiadas, garras de besta demoníaca e olhos amarelos brilhantes sob a lua cheia.',
-    '["https://images.unsplash.com/photo-1509114397022-ed747cca3f65?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1572945281869-8269d0d9703f?auto=format&fit=crop&w=800&q=80"]'::jsonb,
-    0,
-    '2026-10-31T21:20:00.000Z'
-  ),
-  (
-    'cand_rainha_vampira',
-    'Amanda Vasconcelos',
-    'Rainha Vampira Carmilla',
-    'Terror Clássico',
-    'Vestido imperial de veludo bordô com detalhes em ouro envelhecido, coroa gótica de espinhos e taça de sangue das trevas.',
-    '["https://images.unsplash.com/photo-1534447677768-be436bb09401?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?auto=format&fit=crop&w=800&q=80"]'::jsonb,
-    0,
-    '2026-10-31T21:30:00.000Z'
-  ),
-  (
-    'cand_medico_peste',
-    'Thiago Alvarenga',
-    'Médico da Peste Negra (Plague Doctor)',
-    'Vilões & Cinema',
-    'Máscara alongada de bico de pássaro em couro envelhecido, sobretudo encerado, cartola alta e bastão com lanterna verde espectral.',
-    '["https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1509557965875-b88c97052f0e?auto=format&fit=crop&w=800&q=80"]'::jsonb,
-    0,
-    '2026-10-31T21:40:00.000Z'
-  ),
-  (
-    'cand_zumbi_biohazard',
-    'Fernanda Siqueira',
-    'Zumbi Biohazard do Apocalipse',
-    'Mais Assustador',
-    'Macacão de contenção química rasgado, próteses de infecção necrosada hiper-realistas e lentes de contato esbranquiçadas sinistras.',
-    '["https://images.unsplash.com/photo-1509248961158-e54f6934749c?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1572293007244-8b60335d2b7d?auto=format&fit=crop&w=800&q=80"]'::jsonb,
-    0,
-    '2026-10-31T21:50:00.000Z'
-  ),
-  (
-    'cand_mascarado_slasher',
-    'Rodrigo Lima',
-    'O Mascarado Sombrio (Slasher)',
-    'Vilões & Cinema',
-    'Macacão mecânico manchado de fuligem, máscara facial sinistra com marcas de combate e machado rústico estilizado.',
-    '["https://images.unsplash.com/photo-1509198397868-475647b2a1e5?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1603792907191-89e55f70071a?auto=format&fit=crop&w=800&q=80"]'::jsonb,
-    0,
-    '2026-10-31T22:00:00.000Z'
-  ),
-  (
-    'cand_fada_sombria',
-    'Mariana Couto',
-    'Fada Sombria dos Pântanos',
-    'Mítico & Sobrenatural',
-    'Asas de inseto translúcidas e esfarrapadas em tons de ébano, coroa de galhos secos, maquiagem fosforescente e orquídeas negras.',
-    '["https://images.unsplash.com/photo-1508341591423-4347099e1f19?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1514533450685-4493e01d1fdc?auto=format&fit=crop&w=800&q=80"]'::jsonb,
-    0,
-    '2026-10-31T22:10:00.000Z'
-  )
-ON CONFLICT (id) DO UPDATE SET
-  name = EXCLUDED.name,
-  costume_name = EXCLUDED.costume_name,
-  category = EXCLUDED.category,
-  description = EXCLUDED.description,
-  photos = EXCLUDED.photos;

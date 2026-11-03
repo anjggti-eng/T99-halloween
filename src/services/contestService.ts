@@ -1,4 +1,4 @@
-import { supabase } from '../supabase/config';
+import { supabase, SUPABASE_URL } from '../supabase/config';
 import { db } from '../firebase/config';
 import {
   collection,
@@ -15,223 +15,99 @@ import { Candidate, VoteRecord } from '../types';
 const CANDIDATES_CACHE_KEY = 't99_cached_candidates';
 const VOTES_CACHE_KEY = 't99_cached_votes';
 
-// 8 Official Registered Halloween Costumes (Concurso T99 Halloween)
-export const INITIAL_REGISTERED_CANDIDATES: Candidate[] = [
-  {
-    id: 'cand_noiva_cadaver',
-    name: 'Juliana Mendes',
-    costumeName: 'Noiva Cadáver Gótica',
-    category: 'Terror Clássico',
-    description: 'Vestido de noiva centenário rendado e esfarrapado, véu sombrio, maquiagem cadavérica azulada com buquê de rosas negras secas.',
-    photos: [
-      'https://images.unsplash.com/photo-1509557965875-b88c97052f0e?auto=format&fit=crop&w=800&q=80',
-      'https://images.unsplash.com/photo-1572945281869-8269d0d9703f?auto=format&fit=crop&w=800&q=80',
-    ],
-    votes: 0,
-    createdAt: '2026-10-31T20:00:00.000Z',
-  },
-  {
-    id: 'cand_conde_dracula',
-    name: 'Lucas Silveira',
-    costumeName: 'Lorde Drácula Vitoriano',
-    category: 'Terror Clássico',
-    description: 'Capa preta de veludo com gola alta escarlate, dentes caninos hiper-realistas, palidez vampírica e medalhão ancestral dos Cárpatos.',
-    photos: [
-      'https://images.unsplash.com/photo-1603792907191-89e55f70071a?auto=format&fit=crop&w=800&q=80',
-      'https://images.unsplash.com/photo-1540555700478-4be289fbecef?auto=format&fit=crop&w=800&q=80',
-    ],
-    votes: 0,
-    createdAt: '2026-10-31T20:10:00.000Z',
-  },
-  {
-    id: 'cand_bruxa_salem',
-    name: 'Beatriz Alencar',
-    costumeName: 'Bruxa Ancestral de Salem',
-    category: 'Mítico & Sobrenatural',
-    description: 'Túnica rústica de bruxaria ancestral, cajado com crânio entalhado em madeira negra, grimório de feitiços e olhos brancos assustadores.',
-    photos: [
-      'https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?auto=format&fit=crop&w=800&q=80',
-      'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=800&q=80',
-    ],
-    votes: 0,
-    createdAt: '2026-10-31T20:20:00.000Z',
-  },
-  {
-    id: 'cand_palhaco_macabro',
-    name: 'Diego Martinez',
-    costumeName: 'Palhaço Macabro do Circo Sombrio',
-    category: 'Criativo & Engraçado',
-    description: 'Traje circense vintage manchado, sorriso de látex rasgado de orelha a orelha, maquiagem teatral sinistra e balão vermelho ensanguentado.',
-    photos: [
-      'https://images.unsplash.com/photo-1509248961158-e54f6934749c?auto=format&fit=crop&w=800&q=80',
-      'https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=800&q=80',
-    ],
-    votes: 0,
-    createdAt: '2026-10-31T20:30:00.000Z',
-  },
-  {
-    id: 'cand_espantalho_assassino',
-    name: 'Rafael Torres',
-    costumeName: 'Espantalho dos Milharais Malditos',
-    category: 'Mais Assustador',
-    description: 'Máscara costurada em estopa rústica e arame farpado, chapéu pontudo desgastado, foice metálica enferrujada e aura aterrorizante.',
-    photos: [
-      'https://images.unsplash.com/photo-1572293007244-8b60335d2b7d?auto=format&fit=crop&w=800&q=80',
-      'https://images.unsplash.com/photo-1508700929628-666bc8bd84ea?auto=format&fit=crop&w=800&q=80',
-    ],
-    votes: 0,
-    createdAt: '2026-10-31T20:40:00.000Z',
-  },
-  {
-    id: 'cand_catrina_mexicana',
-    name: 'Camila Rocha',
-    costumeName: 'La Catrina - Dama de la Muerte',
-    category: 'Mítico & Sobrenatural',
-    description: 'Pintura facial minuciosa de caveira mexicana com pedrarias pretas e douradas, tiara farta de flores de cempasúchil e traje bordado.',
-    photos: [
-      'https://images.unsplash.com/photo-1508341591423-4347099e1f19?auto=format&fit=crop&w=800&q=80',
-      'https://images.unsplash.com/photo-1481819613568-3701cbc70156?auto=format&fit=crop&w=800&q=80',
-    ],
-    votes: 0,
-    createdAt: '2026-10-31T20:50:00.000Z',
-  },
-  {
-    id: 'cand_ceifador_morte',
-    name: 'Marcos Vinícius',
-    costumeName: 'Ceifador da Meia-Noite (Grim Reaper)',
-    category: 'Vilões & Cinema',
-    description: 'Manto negro sem rosto com capuz profundo, garras esqueléticas articuladas e foice imponente de lâmina espectral.',
-    photos: [
-      'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?auto=format&fit=crop&w=800&q=80',
-      'https://images.unsplash.com/photo-1513151233558-d860c5398176?auto=format&fit=crop&w=800&q=80',
-    ],
-    votes: 0,
-    createdAt: '2026-10-31T21:00:00.000Z',
-  },
-  {
-    id: 'cand_feiticeira_sombras',
-    name: 'Larissa Fernandes',
-    costumeName: 'Feiticeira das Sombras & Teias',
-    category: 'Cosplay Sombrio',
-    description: 'Corset rendado em teias de aranha com véu gótico de tule negro, tiara de chifres pontiagudos e amuleto luminescente.',
-    photos: [
-      'https://images.unsplash.com/photo-1514533450685-4493e01d1fdc?auto=format&fit=crop&w=800&q=80',
-      'https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?auto=format&fit=crop&w=800&q=80',
-    ],
-    votes: 0,
-    createdAt: '2026-10-31T21:10:00.000Z',
-  },
-  {
-    id: 'cand_lobisomem_lua',
-    name: 'Gabriel Duarte',
-    costumeName: 'Lobisomem da Lua de Sangue',
-    category: 'Terror Clássico',
-    description: 'Pelagem rústica realista, presas caninas afiadas, garras de besta demoníaca e olhos amarelos brilhantes sob a lua cheia.',
-    photos: [
-      'https://images.unsplash.com/photo-1509114397022-ed747cca3f65?auto=format&fit=crop&w=800&q=80',
-      'https://images.unsplash.com/photo-1572945281869-8269d0d9703f?auto=format&fit=crop&w=800&q=80',
-    ],
-    votes: 0,
-    createdAt: '2026-10-31T21:20:00.000Z',
-  },
-  {
-    id: 'cand_rainha_vampira',
-    name: 'Amanda Vasconcelos',
-    costumeName: 'Rainha Vampira Carmilla',
-    category: 'Terror Clássico',
-    description: 'Vestido imperial de veludo bordô com detalhes em ouro envelhecido, coroa gótica de espinhos e taça de sangue das trevas.',
-    photos: [
-      'https://images.unsplash.com/photo-1534447677768-be436bb09401?auto=format&fit=crop&w=800&q=80',
-      'https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?auto=format&fit=crop&w=800&q=80',
-    ],
-    votes: 0,
-    createdAt: '2026-10-31T21:30:00.000Z',
-  },
-  {
-    id: 'cand_medico_peste',
-    name: 'Thiago Alvarenga',
-    costumeName: 'Médico da Peste Negra (Plague Doctor)',
-    category: 'Vilões & Cinema',
-    description: 'Máscara alongada de bico de pássaro em couro envelhecido, sobretudo encerado, cartola alta e bastão com lanterna verde espectral.',
-    photos: [
-      'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=800&q=80',
-      'https://images.unsplash.com/photo-1509557965875-b88c97052f0e?auto=format&fit=crop&w=800&q=80',
-    ],
-    votes: 0,
-    createdAt: '2026-10-31T21:40:00.000Z',
-  },
-  {
-    id: 'cand_zumbi_biohazard',
-    name: 'Fernanda Siqueira',
-    costumeName: 'Zumbi Biohazard do Apocalipse',
-    category: 'Mais Assustador',
-    description: 'Macacão de contenção química rasgado, próteses de infecção necrosada hiper-realistas e lentes de contato esbranquiçadas sinistras.',
-    photos: [
-      'https://images.unsplash.com/photo-1509248961158-e54f6934749c?auto=format&fit=crop&w=800&q=80',
-      'https://images.unsplash.com/photo-1572293007244-8b60335d2b7d?auto=format&fit=crop&w=800&q=80',
-    ],
-    votes: 0,
-    createdAt: '2026-10-31T21:50:00.000Z',
-  },
-  {
-    id: 'cand_mascarado_slasher',
-    name: 'Rodrigo Lima',
-    costumeName: 'O Mascarado Sombrio (Slasher)',
-    category: 'Vilões & Cinema',
-    description: 'Macacão mecânico manchado de fuligem, máscara facial sinistra com marcas de combate e machado rústico estilizado.',
-    photos: [
-      'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?auto=format&fit=crop&w=800&q=80',
-      'https://images.unsplash.com/photo-1603792907191-89e55f70071a?auto=format&fit=crop&w=800&q=80',
-    ],
-    votes: 0,
-    createdAt: '2026-10-31T22:00:00.000Z',
-  },
-  {
-    id: 'cand_fada_sombria',
-    name: 'Mariana Couto',
-    costumeName: 'Fada Sombria dos Pântanos',
-    category: 'Mítico & Sobrenatural',
-    description: 'Asas de inseto translúcidas e esfarrapadas em tons de ébano, coroa de galhos secos, maquiagem fosforescente e orquídeas negras.',
-    photos: [
-      'https://images.unsplash.com/photo-1508341591423-4347099e1f19?auto=format&fit=crop&w=800&q=80',
-      'https://images.unsplash.com/photo-1514533450685-4493e01d1fdc?auto=format&fit=crop&w=800&q=80',
-    ],
-    votes: 0,
-    createdAt: '2026-10-31T22:10:00.000Z',
-  },
+// Known IDs of mock / fake placeholder candidates to purge and forbid
+export const FAKE_CANDIDATE_IDS: string[] = [
+  'cand_noiva_cadaver',
+  'cand_conde_dracula',
+  'cand_bruxa_salem',
+  'cand_palhaco_macabro',
+  'cand_espantalho_assassino',
+  'cand_catrina_mexicana',
+  'cand_ceifador_morte',
+  'cand_feiticeira_sombras',
+  'cand_lobisomem_lua',
+  'cand_rainha_vampira',
+  'cand_medico_peste',
+  'cand_zumbi_biohazard',
+  'cand_mascarado_slasher',
+  'cand_fada_sombria',
 ];
 
-// Local storage fallback helpers for Candidates
+// Deprecated empty initial list so NO fake candidates are ever automatically seeded
+export const INITIAL_REGISTERED_CANDIDATES: Candidate[] = [];
+
+// Helper to check if an ID belongs to a fake candidate
+export function isFakeCandidateId(id: string): boolean {
+  return FAKE_CANDIDATE_IDS.includes(id);
+}
+
+// Local storage fallback helpers for Candidates (never returns fake candidates)
 export function getCachedCandidates(): Candidate[] {
   try {
     const raw = localStorage.getItem(CANDIDATES_CACHE_KEY);
     if (raw) {
       const parsed: Candidate[] = JSON.parse(raw);
-      // Ensure all 14 official candidates are present
-      if (Array.isArray(parsed) && parsed.length >= 14) {
-        return parsed;
+      if (Array.isArray(parsed)) {
+        // Strictly filter out any fake candidates
+        return parsed.filter((c) => !isFakeCandidateId(c.id));
       }
     }
-    // Default to 14 registered candidates if cache is empty or has fewer
-    saveCachedCandidates(INITIAL_REGISTERED_CANDIDATES);
-    return INITIAL_REGISTERED_CANDIDATES;
+    return [];
   } catch {
-    return INITIAL_REGISTERED_CANDIDATES;
+    return [];
   }
-}
-
-// Reset and load the 14 official candidates
-export function resetTo14OfficialCandidates(): Candidate[] {
-  saveCachedCandidates(INITIAL_REGISTERED_CANDIDATES);
-  return INITIAL_REGISTERED_CANDIDATES;
 }
 
 export function saveCachedCandidates(candidates: Candidate[]): void {
   try {
-    localStorage.setItem(CANDIDATES_CACHE_KEY, JSON.stringify(candidates));
+    // Strictly filter out any fake candidates before saving
+    const cleanList = candidates.filter((c) => !isFakeCandidateId(c.id));
+    localStorage.setItem(CANDIDATES_CACHE_KEY, JSON.stringify(cleanList));
   } catch (err) {
     console.warn('Could not save candidates cache:', err);
   }
+}
+
+// Purge all fake candidates from Supabase, Firestore, and LocalStorage
+export async function purgeFakeCandidates(): Promise<{ success: boolean; count: number; error?: string }> {
+  let countRemoved = 0;
+
+  // 1. Remove from Supabase
+  try {
+    const { error, count } = await supabase
+      .from('candidates')
+      .delete({ count: 'exact' })
+      .in('id', FAKE_CANDIDATE_IDS);
+
+    if (!error && typeof count === 'number') {
+      countRemoved += count;
+    }
+  } catch (err) {
+    console.warn('Supabase purge fake notice:', err);
+  }
+
+  // 2. Remove from Firestore
+  try {
+    for (const fakeId of FAKE_CANDIDATE_IDS) {
+      await deleteDoc(doc(db, 'candidates', fakeId));
+      countRemoved++;
+    }
+  } catch (err) {
+    console.warn('Firestore purge fake notice:', err);
+  }
+
+  // 3. Remove from LocalStorage
+  const cached = getCachedCandidates();
+  const clean = cached.filter((c) => !isFakeCandidateId(c.id));
+  saveCachedCandidates(clean);
+
+  return { success: true, count: countRemoved };
+}
+
+// Deprecated alias for backwards compatibility
+export function resetTo14OfficialCandidates(): Candidate[] {
+  purgeFakeCandidates();
+  return getCachedCandidates();
 }
 
 // Local storage fallback helpers for Votes
@@ -278,12 +154,24 @@ function mapRowToVote(row: any): VoteRecord {
   };
 }
 
-// Upload official candidates directly to Supabase instance (http://192.168.3.108:8000)
+// Upload ONLY real registered candidates directly to Supabase instance (http://192.168.0.179:8000)
 export async function uploadCandidatesToSupabase(
-  candidatesToUpload: Candidate[] = INITIAL_REGISTERED_CANDIDATES
+  candidatesToUpload?: Candidate[]
 ): Promise<{ success: boolean; count: number; error?: string }> {
   try {
-    const payload = candidatesToUpload.map((cand) => ({
+    const list = candidatesToUpload || getCachedCandidates();
+    // Strictly filter out any fake candidates
+    const realCandidates = list.filter((cand) => !isFakeCandidateId(cand.id));
+
+    if (realCandidates.length === 0) {
+      return {
+        success: false,
+        count: 0,
+        error: 'Nenhuma fantasia real cadastrada. Cadastre as fantasias no gerenciador primeiro para sincronizar com o Supabase!',
+      };
+    }
+
+    const payload = realCandidates.map((cand) => ({
       id: cand.id,
       name: cand.name,
       costume_name: cand.costumeName,
@@ -306,7 +194,7 @@ export async function uploadCandidatesToSupabase(
 
     // Also mirror to Firestore for dual resilience
     try {
-      for (const cand of candidatesToUpload) {
+      for (const cand of realCandidates) {
         await setDoc(doc(db, 'candidates', cand.id), cand, { merge: true });
       }
     } catch (fsErr) {
@@ -314,7 +202,7 @@ export async function uploadCandidatesToSupabase(
     }
 
     // Save local cache
-    saveCachedCandidates(candidatesToUpload);
+    saveCachedCandidates(realCandidates);
 
     return { success: true, count: data ? data.length : payload.length };
   } catch (err: any) {
@@ -342,14 +230,7 @@ export async function testSupabaseConnection(): Promise<{
     }
     return { connected: true, count: count ?? (data?.length || 0), latencyMs };
   } catch (err: any) {
-    return { connected: false, count: 0, error: err?.message || 'Não foi possível conectar ao IP do Supabase' };
-  }
-}
-
-// Upload seed registered candidates to databases if remote is empty
-async function seedRegisteredCandidatesIfNeeded(existing: Candidate[]) {
-  if (existing.length === 0) {
-    await uploadCandidatesToSupabase(INITIAL_REGISTERED_CANDIDATES);
+    return { connected: false, count: 0, error: err?.message || `Não foi possível conectar ao IP ${SUPABASE_URL}` };
   }
 }
 
@@ -358,7 +239,7 @@ export function subscribeToCandidates(
   onUpdate: (candidates: Candidate[]) => void,
   onError?: (err: unknown) => void
 ) {
-  // 1. Immediately serve cached / registered data
+  // 1. Immediately serve clean cached data
   const initialCache = getCachedCandidates();
   onUpdate(initialCache);
 
@@ -374,14 +255,15 @@ export function subscribeToCandidates(
         .select('*')
         .order('votes', { ascending: false });
 
-      if (!error && data && data.length > 0) {
-        loadedList = data.map(mapRowToCandidate);
+      if (!error && data) {
+        // Exclude fake placeholder candidates
+        loadedList = data.map(mapRowToCandidate).filter((c) => !isFakeCandidateId(c.id));
       }
     } catch (err) {
       console.warn('Supabase fetch notice, falling back to Firestore/Cache:', err);
     }
 
-    // B. If Supabase had no candidates or was offline, try Firestore
+    // B. If Supabase failed or was empty, try Firestore
     if (!loadedList || loadedList.length === 0) {
       try {
         const snap = await getDocs(collection(db, 'candidates'));
@@ -389,7 +271,9 @@ export function subscribeToCandidates(
           const list: Candidate[] = [];
           snap.forEach((d) => {
             const val = d.data() as Candidate;
-            list.push({ ...val, id: d.id });
+            if (!isFakeCandidateId(d.id)) {
+              list.push({ ...val, id: d.id });
+            }
           });
           if (list.length > 0) {
             loadedList = list;
@@ -400,18 +284,17 @@ export function subscribeToCandidates(
       }
     }
 
-    // C. If both databases are empty or unreachable, use initial registered candidates
-    if (!loadedList || loadedList.length === 0) {
-      const cached = getCachedCandidates();
-      loadedList = cached.length > 0 ? cached : INITIAL_REGISTERED_CANDIDATES;
-      // Seed remote databases with registered candidates in background
-      seedRegisteredCandidatesIfNeeded([]);
+    // C. Fallback to clean cached candidates
+    if (!loadedList) {
+      loadedList = getCachedCandidates();
     }
 
     if (loadedList && isSubscribed) {
-      loadedList.sort((a, b) => b.votes - a.votes);
-      saveCachedCandidates(loadedList);
-      onUpdate(loadedList);
+      // Clean filter again
+      const cleanList = loadedList.filter((c) => !isFakeCandidateId(c.id));
+      cleanList.sort((a, b) => b.votes - a.votes);
+      saveCachedCandidates(cleanList);
+      onUpdate(cleanList);
     }
   };
 
@@ -438,7 +321,9 @@ export function subscribeToCandidates(
       if (!snapshot.empty && isSubscribed) {
         const list: Candidate[] = [];
         snapshot.forEach((d) => {
-          list.push({ ...(d.data() as Candidate), id: d.id });
+          if (!isFakeCandidateId(d.id)) {
+            list.push({ ...(d.data() as Candidate), id: d.id });
+          }
         });
         list.sort((a, b) => b.votes - a.votes);
         saveCachedCandidates(list);
@@ -474,7 +359,7 @@ export function subscribeToCandidates(
   };
 }
 
-// Real-time listener for all votes (used by Admin Panel to view all voters)
+// Real-time listener for all votes (used by Admin Panel to view all voters and who they voted for)
 export function subscribeToVotes(
   onUpdate: (votes: VoteRecord[]) => void,
   onError?: (err: unknown) => void
@@ -512,6 +397,8 @@ export function subscribeToVotes(
           snap.forEach((d) => {
             fList.push({ ...(d.data() as VoteRecord), id: d.id });
           });
+          // sort descending by votedAt
+          fList.sort((a, b) => new Date(b.votedAt).getTime() - new Date(a.votedAt).getTime());
           list = fList;
         }
       } catch (fErr) {
@@ -618,47 +505,61 @@ export async function castVote(
     votedAt: new Date().toISOString(),
   };
 
-  // Check if device already voted
+  // Check if device already voted locally
   const cachedVotes = getCachedVotes();
   if (cachedVotes.some((v) => v.deviceId === deviceId)) {
     throw new Error('Este computador já registrou um voto para o T99 Halloween!');
   }
 
-  // 1. Save in Supabase
+  // 1. Save in Supabase via authorized operation (cast_vote RPC)
   try {
-    const { data: existingVote } = await supabase
-      .from('votes')
-      .select('id')
-      .eq('device_id', deviceId)
-      .maybeSingle();
-
-    if (existingVote) {
-      throw new Error('Este computador já registrou um voto para o T99 Halloween!');
-    }
-
-    const { data: candidateData } = await supabase
-      .from('candidates')
-      .select('votes')
-      .eq('id', candidateId)
-      .single();
-
-    const currentVotes = (candidateData?.votes as number) || 0;
-
-    await supabase
-      .from('candidates')
-      .update({ votes: currentVotes + 1 })
-      .eq('id', candidateId);
-
-    await supabase.from('votes').insert({
-      id: voteDocId,
-      device_id: deviceId,
-      voter_name: cleanVoterName,
-      candidate_id: candidateId,
-      candidate_name: candidateName,
-      voted_at: newVoteRecord.votedAt,
+    const { error: rpcError } = await supabase.rpc('cast_vote', {
+      p_device_id: deviceId,
+      p_voter_name: cleanVoterName,
+      p_candidate_id: candidateId,
+      p_candidate_name: candidateName,
     });
+
+    if (rpcError) {
+      if (rpcError.message?.includes('já registrou') || rpcError.message?.includes('obrigatório')) {
+        throw new Error(rpcError.message);
+      }
+
+      // Fallback in case stored procedure has not been run in Supabase yet
+      const { data: existingVote } = await supabase
+        .from('votes')
+        .select('id')
+        .eq('device_id', deviceId)
+        .maybeSingle();
+
+      if (existingVote) {
+        throw new Error('Este computador já registrou um voto para o T99 Halloween!');
+      }
+
+      const { data: candidateData } = await supabase
+        .from('candidates')
+        .select('votes')
+        .eq('id', candidateId)
+        .single();
+
+      const currentVotes = (candidateData?.votes as number) || 0;
+
+      await supabase
+        .from('candidates')
+        .update({ votes: currentVotes + 1 })
+        .eq('id', candidateId);
+
+      await supabase.from('votes').insert({
+        id: voteDocId,
+        device_id: deviceId,
+        voter_name: cleanVoterName,
+        candidate_id: candidateId,
+        candidate_name: candidateName,
+        voted_at: newVoteRecord.votedAt,
+      });
+    }
   } catch (err: any) {
-    if (err?.message?.includes('já registrou')) {
+    if (err?.message?.includes('já registrou') || err?.message?.includes('obrigatório')) {
       throw err;
     }
     console.warn('Supabase castVote notice:', err);
@@ -750,7 +651,7 @@ export async function deleteVote(voteId: string, candidateId: string): Promise<v
   saveCachedCandidates(updated);
 }
 
-// Admin: Add candidate
+// Admin: Add candidate (Real candidates registered by the administrator)
 export async function addCandidate(candidate: Omit<Candidate, 'id' | 'votes' | 'createdAt'>): Promise<string> {
   const id = `cand_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
@@ -836,8 +737,9 @@ export async function deleteCandidate(candidateId: string): Promise<void> {
   saveCachedCandidates(current.filter((c) => c.id !== candidateId));
 }
 
-// Admin: Reset all votes to 0 (Keeps all registered candidates intact)
+// Admin: Reset all votes to 0 (Keeps all real registered candidates intact)
 export async function resetAllVotes(): Promise<void> {
+  // 1. Reset Supabase
   try {
     await supabase.from('candidates').update({ votes: 0 }).neq('id', 'dummy');
     await supabase.from('votes').delete().neq('id', 'dummy');
@@ -845,10 +747,17 @@ export async function resetAllVotes(): Promise<void> {
     console.warn('Supabase reset votes notice:', err);
   }
 
+  // 2. Reset Firestore and purge any fake costumes
+  const firestoreList: Candidate[] = [];
   try {
     const candDocs = await getDocs(collection(db, 'candidates'));
     for (const d of candDocs.docs) {
-      await updateDoc(doc(db, 'candidates', d.id), { votes: 0 });
+      if (!isFakeCandidateId(d.id)) {
+        await updateDoc(doc(db, 'candidates', d.id), { votes: 0 });
+        firestoreList.push({ ...(d.data() as Candidate), id: d.id, votes: 0 });
+      } else {
+        await deleteDoc(doc(db, 'candidates', d.id));
+      }
     }
     const voteDocs = await getDocs(collection(db, 'votes'));
     for (const vd of voteDocs.docs) {
@@ -858,9 +767,16 @@ export async function resetAllVotes(): Promise<void> {
     console.warn('Firestore reset votes notice:', err);
   }
 
-  const cached = getCachedCandidates();
-  saveCachedCandidates(cached.map((c) => ({ ...c, votes: 0 })));
+  // 3. Reset Local Caches
+  const currentCached = getCachedCandidates();
+  const baseList = firestoreList.length > 0 ? firestoreList : currentCached;
+  const zeroedList = baseList
+    .filter((c) => !isFakeCandidateId(c.id))
+    .map((c) => ({ ...c, votes: 0 }));
+
+  saveCachedCandidates(zeroedList);
   saveCachedVotes([]);
+
   try {
     localStorage.removeItem('t99_halloween_my_vote');
     localStorage.removeItem(VOTES_CACHE_KEY);
@@ -882,6 +798,10 @@ export async function purgeAllCandidatesAndVotes(): Promise<void> {
     const candDocs = await getDocs(collection(db, 'candidates'));
     for (const d of candDocs.docs) {
       await deleteDoc(doc(db, 'candidates', d.id));
+    }
+    const voteDocs = await getDocs(collection(db, 'votes'));
+    for (const vd of voteDocs.docs) {
+      await deleteDoc(doc(db, 'votes', vd.id));
     }
   } catch (err) {
     console.warn('Firestore purge notice:', err);

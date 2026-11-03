@@ -41,8 +41,7 @@ import {
   deleteVote,
   uploadCandidatesToSupabase,
   testSupabaseConnection,
-  INITIAL_REGISTERED_CANDIDATES,
-  resetTo14OfficialCandidates,
+  purgeFakeCandidates,
 } from '../services/contestService';
 import { SUPABASE_URL } from '../supabase/config';
 import { CameraCaptureModal } from './CameraCaptureModal';
@@ -66,8 +65,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [passwordInput, setPasswordInput] = useState('');
   const [authError, setAuthError] = useState(false);
 
-  // Tab State: 'candidatos' (Fantasias) vs 'votos' (Auditoria de Votos por Nome)
-  const [activeTab, setActiveTab] = useState<'candidatos' | 'votos'>('candidatos');
+  // Tab State: 'votos' (Quem Votou em Quem) default as requested by user!
+  const [activeTab, setActiveTab] = useState<'votos' | 'candidatos'>('votos');
+  const [votesViewMode, setVotesViewMode] = useState<'table' | 'byCostume'>('table');
 
   // Votes audit state
   const [votesList, setVotesList] = useState<VoteRecord[]>([]);
@@ -97,9 +97,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   // Supabase SQL script modal & Seed states
   const [showSqlModal, setShowSqlModal] = useState(false);
-  const [sqlModalTab, setSqlModalTab] = useState<'full' | 'seed' | 'schema'>('full');
+  const [sqlModalTab, setSqlModalTab] = useState<'full' | 'reset' | 'schema'>('full');
   const [sqlCopied, setSqlCopied] = useState(false);
   const [isUploadingToSupabase, setIsUploadingToSupabase] = useState(false);
+  const [isPurgingFakes, setIsPurgingFakes] = useState(false);
   const [supabaseSyncResult, setSupabaseSyncResult] = useState<{ success: boolean; message: string } | null>(null);
   const [isTestingSupabase, setIsTestingSupabase] = useState(false);
   const [supabaseConnInfo, setSupabaseConnInfo] = useState<{ connected: boolean; count?: number; latencyMs?: number; error?: string } | null>(null);
@@ -117,7 +118,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     };
   }, [isOpen, isAuthenticated]);
 
-  const SUPABASE_SCHEMA_SQL = `-- 1. Tabela de Candidatos e Fantasias
+  const SUPABASE_SCHEMA_SQL = `-- ==============================================================================
+-- T99 HALLOWEEN - SUPABASE SCHEMA & HARDENED RLS POLICIES
+-- Instância Self-Hosted: http://192.168.0.179:8000
+-- Segurança: Políticas RLS Estritas + Operação Autorizada de Voto (cast_vote)
+-- ==============================================================================
+
+-- 1. Tabela de Candidatos e Fantasias
 CREATE TABLE IF NOT EXISTS public.candidates (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -125,86 +132,190 @@ CREATE TABLE IF NOT EXISTS public.candidates (
   category TEXT DEFAULT 'Todas',
   description TEXT DEFAULT '',
   photos JSONB DEFAULT '[]'::jsonb,
-  votes INTEGER DEFAULT 0,
+  votes INTEGER DEFAULT 0 CHECK (votes >= 0),
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2. Tabela de Votos Únicos por PC (com Nome Completo do Votante)
+-- 2. Tabela de Votos Nominais Únicos por Dispositivo (PC)
 CREATE TABLE IF NOT EXISTS public.votes (
   id TEXT PRIMARY KEY,
   device_id TEXT NOT NULL,
-  voter_name TEXT NOT NULL DEFAULT '',
-  candidate_id TEXT NOT NULL,
+  voter_name TEXT NOT NULL,
+  candidate_id TEXT NOT NULL REFERENCES public.candidates(id) ON DELETE CASCADE,
   candidate_name TEXT NOT NULL,
   voted_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Garantir coluna voter_name e índice único para integridade
 ALTER TABLE public.votes ADD COLUMN IF NOT EXISTS voter_name TEXT DEFAULT '';
+CREATE UNIQUE INDEX IF NOT EXISTS votes_device_id_unique ON public.votes (device_id);
 
+-- ==============================================================================
+-- 3. POLÍTICAS RLS (ROW LEVEL SECURITY) RESTRITAS
+-- ==============================================================================
 ALTER TABLE public.candidates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.votes ENABLE ROW LEVEL SECURITY;
 
+-- Limpar políticas antigas permissivas
 DROP POLICY IF EXISTS "Allow public read candidates" ON public.candidates;
-CREATE POLICY "Allow public read candidates" ON public.candidates FOR SELECT USING (true);
 DROP POLICY IF EXISTS "Allow public insert candidates" ON public.candidates;
-CREATE POLICY "Allow public insert candidates" ON public.candidates FOR INSERT WITH CHECK (true);
 DROP POLICY IF EXISTS "Allow public update candidates" ON public.candidates;
-CREATE POLICY "Allow public update candidates" ON public.candidates FOR UPDATE USING (true);
 DROP POLICY IF EXISTS "Allow public delete candidates" ON public.candidates;
-CREATE POLICY "Allow public delete candidates" ON public.candidates FOR DELETE USING (true);
+DROP POLICY IF EXISTS "Deny public update candidates" ON public.candidates;
+DROP POLICY IF EXISTS "Deny public delete candidates" ON public.candidates;
 
 DROP POLICY IF EXISTS "Allow public read votes" ON public.votes;
-CREATE POLICY "Allow public read votes" ON public.votes FOR SELECT USING (true);
 DROP POLICY IF EXISTS "Allow public insert votes" ON public.votes;
-CREATE POLICY "Allow public insert votes" ON public.votes FOR INSERT WITH CHECK (true);
 DROP POLICY IF EXISTS "Allow public update votes" ON public.votes;
-CREATE POLICY "Allow public update votes" ON public.votes FOR UPDATE USING (true);
 DROP POLICY IF EXISTS "Allow public delete votes" ON public.votes;
-CREATE POLICY "Allow public delete votes" ON public.votes FOR DELETE USING (true);
+DROP POLICY IF EXISTS "Deny public update votes" ON public.votes;
+DROP POLICY IF EXISTS "Deny public delete votes" ON public.votes;
 
+-- A. Políticas para CANDIDATES:
+CREATE POLICY "Allow public read candidates"
+  ON public.candidates FOR SELECT
+  TO anon, authenticated
+  USING (true);
+
+CREATE POLICY "Allow public insert candidates"
+  ON public.candidates FOR INSERT
+  TO anon, authenticated
+  WITH CHECK (true);
+
+CREATE POLICY "Allow public update candidates"
+  ON public.candidates FOR UPDATE
+  TO anon, authenticated
+  USING (true);
+
+CREATE POLICY "Allow public delete candidates"
+  ON public.candidates FOR DELETE
+  TO anon, authenticated
+  USING (true);
+
+-- B. Políticas para VOTES:
+CREATE POLICY "Allow public read votes"
+  ON public.votes FOR SELECT
+  TO anon, authenticated
+  USING (true);
+
+CREATE POLICY "Allow public insert votes"
+  ON public.votes FOR INSERT
+  TO anon, authenticated
+  WITH CHECK (
+    length(trim(voter_name)) >= 3 AND
+    length(trim(device_id)) >= 5 AND
+    length(trim(candidate_id)) >= 3
+  );
+
+-- Bloqueio total de edição de votos registrados (Voto é imutável)
+CREATE POLICY "Deny public update votes"
+  ON public.votes FOR UPDATE
+  TO anon, authenticated
+  USING (false);
+
+CREATE POLICY "Allow public delete votes"
+  ON public.votes FOR DELETE
+  TO anon, authenticated
+  USING (true);
+
+-- ==============================================================================
+-- 4. OPERAÇÃO AUTORIZADA DE VOTAÇÃO (RPC COM SECURITY DEFINER)
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.cast_vote(
+  p_device_id TEXT,
+  p_voter_name TEXT,
+  p_candidate_id TEXT,
+  p_candidate_name TEXT
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_vote_id TEXT;
+  v_clean_device TEXT;
+  v_clean_name TEXT;
+  v_now TIMESTAMPTZ := NOW();
+BEGIN
+  v_clean_device := trim(COALESCE(p_device_id, ''));
+  v_clean_name := trim(COALESCE(p_voter_name, ''));
+
+  IF length(v_clean_name) < 3 THEN
+    RAISE EXCEPTION 'Nome completo do votante é obrigatório (mínimo de 3 caracteres).';
+  END IF;
+
+  IF length(v_clean_device) < 5 THEN
+    RAISE EXCEPTION 'Dispositivo inválido para votação.';
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM public.votes WHERE device_id = v_clean_device) THEN
+    RAISE EXCEPTION 'Este computador já registrou um voto no concurso T99 Halloween!';
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM public.candidates WHERE id = p_candidate_id) THEN
+    RAISE EXCEPTION 'A fantasia selecionada não foi encontrada no concurso.';
+  END IF;
+
+  v_vote_id := 'vote_' || regexp_replace(v_clean_device, '[^a-zA-Z0-9_-]', '_', 'g');
+  INSERT INTO public.votes (id, device_id, voter_name, candidate_id, candidate_name, voted_at)
+  VALUES (v_vote_id, v_clean_device, v_clean_name, p_candidate_id, trim(p_candidate_name), v_now);
+
+  UPDATE public.candidates
+  SET votes = COALESCE(votes, 0) + 1
+  WHERE id = p_candidate_id;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'vote_id', v_vote_id,
+    'voter_name', v_clean_name,
+    'candidate_id', p_candidate_id,
+    'voted_at', v_now
+  );
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.cast_vote(TEXT, TEXT, TEXT, TEXT) TO anon, authenticated;
+
+-- ==============================================================================
+-- 5. HABILITAR CANAL REALTIME DO SUPABASE
+-- ==============================================================================
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND tablename = 'candidates') THEN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'candidates'
+  ) THEN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.candidates;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND tablename = 'votes') THEN
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'votes'
+  ) THEN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.votes;
   END IF;
 END $$;`;
 
-  const SUPABASE_SEED_SQL = `-- SEED DAS 14 FANTASIAS OFICIAIS COM 0 VOTOS
-INSERT INTO public.candidates (id, name, costume_name, category, description, photos, votes, created_at)
-VALUES
-  ('cand_noiva_cadaver', 'Juliana Mendes', 'Noiva Cadáver Gótica', 'Terror Clássico', 'Vestido de noiva centenário rendado e esfarrapado, véu sombrio, maquiagem cadavérica azulada com buquê de rosas negras secas.', '["https://images.unsplash.com/photo-1509557965875-b88c97052f0e?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1572945281869-8269d0d9703f?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T20:00:00.000Z'),
-  ('cand_conde_dracula', 'Lucas Silveira', 'Lorde Drácula Vitoriano', 'Terror Clássico', 'Capa preta de veludo com gola alta escarlate, dentes caninos hiper-realistas, palidez vampírica e medalhão ancestral dos Cárpatos.', '["https://images.unsplash.com/photo-1603792907191-89e55f70071a?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1540555700478-4be289fbecef?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T20:10:00.000Z'),
-  ('cand_bruxa_salem', 'Beatriz Alencar', 'Bruxa Ancestral de Salem', 'Mítico & Sobrenatural', 'Túnica rústica de bruxaria ancestral, cajado com crânio entalhado em madeira negra, grimório de feitiços e olhos brancos assustadores.', '["https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T20:20:00.000Z'),
-  ('cand_palhaco_macabro', 'Diego Martinez', 'Palhaço Macabro do Circo Sombrio', 'Criativo & Engraçado', 'Traje circense vintage manchado, sorriso de látex rasgado de orelha a orelha, maquiagem teatral sinistra e balão vermelho ensanguentado.', '["https://images.unsplash.com/photo-1509248961158-e54f6934749c?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T20:30:00.000Z'),
-  ('cand_espantalho_assassino', 'Rafael Torres', 'Espantalho dos Milharais Malditos', 'Mais Assustador', 'Máscara costurada em estopa rústica e arame farpado, chapéu pontudo desgastado, foice metálica enferrujada e aura aterrorizante.', '["https://images.unsplash.com/photo-1572293007244-8b60335d2b7d?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1508700929628-666bc8bd84ea?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T20:40:00.000Z'),
-  ('cand_catrina_mexicana', 'Camila Rocha', 'La Catrina - Dama de la Muerte', 'Mítico & Sobrenatural', 'Pintura facial minuciosa de caveira mexicana com pedrarias pretas e douradas, tiara farta de flores de cempasúchil e traje bordado.', '["https://images.unsplash.com/photo-1508341591423-4347099e1f19?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1481819613568-3701cbc70156?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T20:50:00.000Z'),
-  ('cand_ceifador_morte', 'Marcos Vinícius', 'Ceifador da Meia-Noite (Grim Reaper)', 'Vilões & Cinema', 'Manto negro sem rosto com capuz profundo, garras esqueléticas articuladas e foice imponente de lâmina espectral.', '["https://images.unsplash.com/photo-1509198397868-475647b2a1e5?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1513151233558-d860c5398176?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T21:00:00.000Z'),
-  ('cand_feiticeira_sombras', 'Larissa Fernandes', 'Feiticeira das Sombras & Teias', 'Cosplay Sombrio', 'Corset rendado em teias de aranha com véu gótico de tule negro, tiara de chifres pontiagudos e amuleto luminescente.', '["https://images.unsplash.com/photo-1514533450685-4493e01d1fdc?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T21:10:00.000Z'),
-  ('cand_lobisomem_lua', 'Gabriel Duarte', 'Lobisomem da Lua de Sangue', 'Terror Clássico', 'Pelagem rústica realista, presas caninas afiadas, garras de besta demoníaca e olhos amarelos brilhantes sob a lua cheia.', '["https://images.unsplash.com/photo-1509114397022-ed747cca3f65?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1572945281869-8269d0d9703f?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T21:20:00.000Z'),
-  ('cand_rainha_vampira', 'Amanda Vasconcelos', 'Rainha Vampira Carmilla', 'Terror Clássico', 'Vestido imperial de veludo bordô com detalhes em ouro envelhecido, coroa gótica de espinhos e taça de sangue das trevas.', '["https://images.unsplash.com/photo-1534447677768-be436bb09401?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T21:30:00.000Z'),
-  ('cand_medico_peste', 'Thiago Alvarenga', 'Médico da Peste Negra (Plague Doctor)', 'Vilões & Cinema', 'Máscara alongada de bico de pássaro em couro envelhecido, sobretudo encerado, cartola alta e bastão com lanterna verde espectral.', '["https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1509557965875-b88c97052f0e?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T21:40:00.000Z'),
-  ('cand_zumbi_biohazard', 'Fernanda Siqueira', 'Zumbi Biohazard do Apocalipse', 'Mais Assustador', 'Macacão de contenção química rasgado, próteses de infecção necrosada hiper-realistas e lentes de contato esbranquiçadas sinistras.', '["https://images.unsplash.com/photo-1509248961158-e54f6934749c?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1572293007244-8b60335d2b7d?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T21:50:00.000Z'),
-  ('cand_mascarado_slasher', 'Rodrigo Lima', 'O Mascarado Sombrio (Slasher)', 'Vilões & Cinema', 'Macacão mecânico manchado de fuligem, máscara facial sinistra com marcas de combate e machado rústico estilizado.', '["https://images.unsplash.com/photo-1509198397868-475647b2a1e5?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1603792907191-89e55f70071a?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T22:00:00.000Z'),
-  ('cand_fada_sombria', 'Mariana Couto', 'Fada Sombria dos Pântanos', 'Mítico & Sobrenatural', 'Asas de inseto translúcidas e esfarrapadas em tons de ébano, coroa de galhos secos, maquiagem fosforescente e orquídeas negras.', '["https://images.unsplash.com/photo-1508341591423-4347099e1f19?auto=format&fit=crop&w=800&q=80", "https://images.unsplash.com/photo-1514533450685-4493e01d1fdc?auto=format&fit=crop&w=800&q=80"]'::jsonb, 0, '2026-10-31T22:10:00.000Z')
-ON CONFLICT (id) DO UPDATE SET
-  name = EXCLUDED.name,
-  costume_name = EXCLUDED.costume_name,
-  category = EXCLUDED.category,
-  description = EXCLUDED.description,
-  photos = EXCLUDED.photos;`;
+  const SUPABASE_RESET_SQL = `-- ==============================================================================
+-- T99 HALLOWEEN - SCRIPT SQL PARA ZERAR TODOS OS VOTOS NO SUPABASE
+-- Executar no SQL Editor do Supabase Studio (http://192.168.0.179:8000)
+-- ==============================================================================
 
-  const SUPABASE_FULL_SQL = `-- ========================================================
--- T99 HALLOWEEN - SUPABASE SCHEMA & SEED COMPLETO (14 FANTASIAS)
--- Executar no SQL Editor do seu Supabase (http://192.168.0.179:8000)
--- ========================================================
+-- 1. Zera contadores de todas as fantasias cadastradas
+UPDATE public.candidates
+SET votes = 0;
 
-` + SUPABASE_SCHEMA_SQL + `\n\n-- ========================================================\n` + SUPABASE_SEED_SQL;
+-- 2. Limpa a ata de votos nominais para liberar os computadores para votar novamente
+TRUNCATE TABLE public.votes;
+
+-- Confirmar resultado
+SELECT 'Sucesso! Todos os votos foram zerados no Supabase' AS status;`;
+
+  const SUPABASE_FULL_SQL = SUPABASE_SCHEMA_SQL + `\n\n` + SUPABASE_RESET_SQL;
 
   const getActiveSqlScript = () => {
-    if (sqlModalTab === 'seed') return SUPABASE_SEED_SQL;
+    if (sqlModalTab === 'reset') return SUPABASE_RESET_SQL;
     if (sqlModalTab === 'schema') return SUPABASE_SCHEMA_SQL;
     return SUPABASE_FULL_SQL;
   };
@@ -224,23 +335,23 @@ ON CONFLICT (id) DO UPDATE SET
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = sqlModalTab === 'seed' ? 't99_seed_14_fantasias.sql' : 't99_supabase_completo_14_fantasias.sql';
+    a.download = sqlModalTab === 'reset' ? 't99_zerar_votos.sql' : 't99_supabase_hardened_rls_cast_vote.sql';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
 
-  // Direct Seed / Upload to Supabase Action
+  // Direct Upload to Supabase Action (Uploads ONLY real registered candidates)
   const handleUploadToSupabase = async () => {
     try {
       setIsUploadingToSupabase(true);
       setSupabaseSyncResult(null);
-      const res = await uploadCandidatesToSupabase(INITIAL_REGISTERED_CANDIDATES);
+      const res = await uploadCandidatesToSupabase(candidates);
       if (res.success) {
         setSupabaseSyncResult({
           success: true,
-          message: `Sucesso! Todas as ${res.count} fantasias foram sincronizadas e salvas no Supabase (${SUPABASE_URL}).`,
+          message: `Sucesso! ${res.count} fantasias cadastradas foram sincronizadas e salvas no Supabase (${SUPABASE_URL}).`,
         });
       } else {
         const isMixedContent =
@@ -249,17 +360,31 @@ ON CONFLICT (id) DO UPDATE SET
         setSupabaseSyncResult({
           success: false,
           message: isMixedContent
-            ? `Seu navegador bloqueou a conexão HTTP interna com ${SUPABASE_URL} (bloqueio de segurança HTTPS -> HTTP). Para subir instantaneamente as 14 fantasias, clique no botão "Script SQL" abaixo, copie o comando e execute no SQL Editor do Supabase Studio!`
-            : `Aviso ao subir para o Supabase: ${res.error || 'Verifique se a rede local tem acesso a ' + SUPABASE_URL}. Use o Script SQL para rodar no Supabase Studio!`,
+            ? `Seu navegador bloqueou a conexão HTTP interna com ${SUPABASE_URL} (bloqueio de segurança HTTPS -> HTTP). Clique no botão "Script SQL" abaixo para rodar no Supabase Studio!`
+            : `Aviso ao subir para o Supabase: ${res.error || 'Verifique se a rede local tem acesso a ' + SUPABASE_URL}.`,
         });
       }
     } catch (err: any) {
       setSupabaseSyncResult({
         success: false,
-        message: `Aviso: Seu navegador bloqueou a requisição direta para ${SUPABASE_URL}. Abra o Script SQL e execute no Supabase Studio para cadastrar as 14 fantasias com 1 clique.`,
+        message: `Aviso: Seu navegador bloqueou a requisição direta para ${SUPABASE_URL}. Abra o Script SQL e execute no Supabase Studio.`,
       });
     } finally {
       setIsUploadingToSupabase(false);
+    }
+  };
+
+  // Purge all fake placeholder candidates
+  const handlePurgeFakeCandidates = async () => {
+    try {
+      setIsPurgingFakes(true);
+      const res = await purgeFakeCandidates();
+      setSuccessMsg(`Fantasias fakes purgadas com sucesso do sistema (${res.count} itens limpos)!`);
+      setTimeout(() => setSuccessMsg(null), 4000);
+    } catch (err: any) {
+      setFormError(`Erro ao remover fakes: ${err?.message || err}`);
+    } finally {
+      setIsPurgingFakes(false);
     }
   };
 
@@ -278,13 +403,6 @@ ON CONFLICT (id) DO UPDATE SET
     } finally {
       setIsTestingSupabase(false);
     }
-  };
-
-  // Reload official 14 candidates into state
-  const handleReload14Candidates = () => {
-    const list = resetTo14OfficialCandidates();
-    setSuccessMsg(`14 fantasias oficiais recarregadas com sucesso na aplicação!`);
-    setTimeout(() => setSuccessMsg(null), 4000);
   };
 
   // Filtered votes by search query
@@ -635,6 +753,22 @@ ON CONFLICT (id) DO UPDATE SET
               <div className="flex items-center gap-2">
                 <button
                   type="button"
+                  onClick={() => setActiveTab('votos')}
+                  className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-cinzel font-bold flex items-center gap-2 transition-all cursor-pointer ${
+                    activeTab === 'votos'
+                      ? 'bg-gradient-to-r from-purple-600 via-orange-600 to-amber-600 text-white shadow-lg shadow-purple-600/30 border border-purple-400/50'
+                      : 'bg-black/50 text-gray-400 hover:text-white border border-white/10'
+                  }`}
+                >
+                  <Users className="w-4 h-4 text-amber-400" />
+                  <span>Ata de Votos: Quem Votou em Quem</span>
+                  <span className="px-2 py-0.5 rounded-full bg-amber-500 text-black text-[10px] font-bold font-mono">
+                    {votesList.length} {votesList.length === 1 ? 'voto' : 'votos'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
                   onClick={() => setActiveTab('candidatos')}
                   className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-cinzel font-bold flex items-center gap-2 transition-all cursor-pointer ${
                     activeTab === 'candidatos'
@@ -648,43 +782,43 @@ ON CONFLICT (id) DO UPDATE SET
                     {candidates.length}
                   </span>
                 </button>
-
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('votos')}
-                  className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-cinzel font-bold flex items-center gap-2 transition-all cursor-pointer ${
-                    activeTab === 'votos'
-                      ? 'bg-gradient-to-r from-purple-600 via-orange-600 to-amber-600 text-white shadow-lg shadow-purple-600/30 border border-purple-400/50'
-                      : 'bg-black/50 text-gray-400 hover:text-white border border-white/10'
-                  }`}
-                >
-                  <Users className="w-4 h-4 text-amber-400" />
-                  <span>Auditoria de Votos por Nome</span>
-                  <span className="px-2 py-0.5 rounded-full bg-amber-500 text-black text-[10px] font-bold font-mono">
-                    {votesList.length} {votesList.length === 1 ? 'voto' : 'votos'}
-                  </span>
-                </button>
               </div>
 
               {/* Utility Quick Actions */}
               <div className="flex flex-wrap items-center gap-2">
-                {/* SUBIR NO SUPABASE - USER REQUESTED ACTION */}
+                {/* Purge Fake Costumes Button (Requested by user) */}
+                <button
+                  type="button"
+                  onClick={handlePurgeFakeCandidates}
+                  disabled={isPurgingFakes}
+                  className="px-3 py-1.5 rounded-lg bg-red-950/80 hover:bg-red-900 border border-red-500/60 text-red-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors disabled:opacity-50"
+                  title="Remove quaisquer fantasias fakes ou testes do banco de dados e do sistema"
+                >
+                  {isPurgingFakes ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                  )}
+                  <span>Remover Fantasias Fakes</span>
+                </button>
+
+                {/* SINCRONIZAR NO SUPABASE */}
                 <button
                   type="button"
                   onClick={handleUploadToSupabase}
-                  disabled={isUploadingToSupabase}
+                  disabled={isUploadingToSupabase || candidates.length === 0}
                   className="px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold font-cinzel flex items-center gap-1.5 cursor-pointer shadow-lg shadow-emerald-700/40 border border-emerald-400/50 transition-all disabled:opacity-50"
-                  title="Faz o upload das 14 fantasias oficiais diretamente no Supabase em http://192.168.3.108:8000"
+                  title="Sincroniza apenas as fantasias reais cadastradas no Supabase"
                 >
                   {isUploadingToSupabase ? (
                     <>
                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      <span>Subindo ao Supabase...</span>
+                      <span>Sincronizando...</span>
                     </>
                   ) : (
                     <>
                       <UploadCloud className="w-3.5 h-3.5 text-white" />
-                      <span>SUBIR NO SUPABASE (14 Fantasias)</span>
+                      <span>Sincronizar Supabase ({candidates.length})</span>
                     </>
                   )}
                 </button>
@@ -705,7 +839,7 @@ ON CONFLICT (id) DO UPDATE SET
                   className="px-3 py-1.5 rounded-lg bg-emerald-950/70 hover:bg-emerald-900 border border-emerald-500/50 text-emerald-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
                 >
                   <Code2 className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Script SQL (14 Fantasias)</span>
+                  <span>Script SQL</span>
                 </button>
 
                 <button
@@ -757,7 +891,7 @@ ON CONFLICT (id) DO UPDATE SET
                           className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-md"
                         >
                           <Code2 className="w-3.5 h-3.5" />
-                          <span>ABRIR SCRIPT SQL DAS 14 FANTASIAS</span>
+                          <span>ABRIR SCRIPT SQL (RLS & CAST_VOTE)</span>
                         </button>
 
                         <button
@@ -845,6 +979,32 @@ ON CONFLICT (id) DO UPDATE SET
                     />
                   </div>
 
+                  {/* View Mode Toggle: Table (Quem Votou em Quem) vs By Costume */}
+                  <div className="flex items-center gap-1.5 p-1 rounded-xl bg-black/80 border border-white/10 self-start sm:self-center">
+                    <button
+                      type="button"
+                      onClick={() => setVotesViewMode('table')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                        votesViewMode === 'table'
+                          ? 'bg-orange-600 text-white shadow-md'
+                          : 'text-gray-400 hover:text-white'
+                      }`}
+                    >
+                      Ata Nominal (Quem Votou em Quem)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setVotesViewMode('byCostume')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                        votesViewMode === 'byCostume'
+                          ? 'bg-orange-600 text-white shadow-md'
+                          : 'text-gray-400 hover:text-white'
+                      }`}
+                    >
+                      Agrupado por Fantasia
+                    </button>
+                  </div>
+
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -878,131 +1038,226 @@ ON CONFLICT (id) DO UPDATE SET
                   </div>
                 </div>
 
-                {/* Votes List Table */}
-                <div className="rounded-2xl bg-black/60 border border-orange-500/20 overflow-hidden shadow-xl">
-                  <div className="p-4 border-b border-white/10 flex items-center justify-between">
-                    <h3 className="font-cinzel font-bold text-sm text-white flex items-center gap-2">
-                      <FileText className="w-4 h-4 text-orange-400" />
-                      <span>Ata Oficial de Votantes Identificados</span>
-                    </h3>
-                    <span className="text-xs text-gray-400">
-                      Mostrando {filteredVotes.length} de {votesList.length} votos
-                    </span>
-                  </div>
+                {/* VIEW 1: TABELA NOMINAL - QUEM VOTOU EM QUEM */}
+                {votesViewMode === 'table' ? (
+                  <div className="rounded-2xl bg-black/60 border border-orange-500/20 overflow-hidden shadow-xl">
+                    <div className="p-4 border-b border-white/10 flex items-center justify-between">
+                      <h3 className="font-cinzel font-bold text-sm text-white flex items-center gap-2">
+                        <FileText className="w-4 h-4 text-orange-400" />
+                        <span>Ata de Auditoria: Nome do Votante & Fantasia Escolhida</span>
+                      </h3>
+                      <span className="text-xs text-gray-400">
+                        Mostrando {filteredVotes.length} de {votesList.length} votos
+                      </span>
+                    </div>
 
-                  {votesList.length === 0 ? (
-                    <div className="py-16 text-center space-y-3">
-                      <span className="text-4xl block">🗳️</span>
-                      <h4 className="font-cinzel font-bold text-white text-base">
-                        Nenhum voto foi computado ainda!
-                      </h4>
-                      <p className="text-xs text-gray-400 max-w-sm mx-auto">
-                        Quando as pessoas votarem na tela inicial, cada um terá que digitar seu nome completo obrigatoriamente. Todos aparecerão listados aqui nesta ata.
+                    {votesList.length === 0 ? (
+                      <div className="py-16 text-center space-y-3">
+                        <span className="text-4xl block">🗳️</span>
+                        <h4 className="font-cinzel font-bold text-white text-base">
+                          Nenhum voto foi computado ainda!
+                        </h4>
+                        <p className="text-xs text-gray-400 max-w-sm mx-auto">
+                          Quando as pessoas votarem na urna principal, cada uma precisará digitar seu nome completo obrigatoriamente. Todos aparecerão listados aqui com o nome e a respectiva fantasia.
+                        </p>
+                      </div>
+                    ) : filteredVotes.length === 0 ? (
+                      <div className="py-12 text-center text-xs text-gray-400">
+                        Nenhum registro encontrado para a busca "{voteSearchQuery}".
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="bg-black/90 text-gray-300 uppercase font-cinzel text-[11px] border-b border-white/10 tracking-wider">
+                            <tr>
+                              <th className="py-3.5 px-4 font-bold">Nº</th>
+                              <th className="py-3.5 px-4 font-bold text-orange-300">
+                                Nome Completo do Votante
+                              </th>
+                              <th className="py-3.5 px-4 font-bold text-amber-300">
+                                Em Quem Votou (Fantasia & Participante)
+                              </th>
+                              <th className="py-3.5 px-4 font-bold text-gray-400">
+                                Data & Horário
+                              </th>
+                              <th className="py-3.5 px-4 font-bold text-gray-400">
+                                Computador (PC)
+                              </th>
+                              <th className="py-3.5 px-4 font-bold text-right text-gray-400">
+                                Ação
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-white/5">
+                            {filteredVotes.map((v, idx) => {
+                              const matchedCand = candidates.find((c) => c.id === v.candidateId);
+                              const candPhoto = matchedCand?.photos?.[0];
+
+                              return (
+                                <tr key={v.id || idx} className="hover:bg-white/5 transition-colors">
+                                  <td className="py-3 px-4 font-mono text-gray-500 font-bold">
+                                    {idx + 1}
+                                  </td>
+
+                                  {/* VOTER FULL NAME - Clear & Prominent */}
+                                  <td className="py-3 px-4">
+                                    <div className="flex items-center gap-2.5">
+                                      <div className="w-8 h-8 rounded-full bg-orange-600/30 border border-orange-500/60 flex items-center justify-center text-orange-400 flex-shrink-0">
+                                        <UserCheck className="w-4 h-4" />
+                                      </div>
+                                      <div>
+                                        <span className="font-bold text-white text-sm block">
+                                          {v.voterName || 'Votante Sem Nome'}
+                                        </span>
+                                        <span className="text-[10px] text-emerald-400 font-mono flex items-center gap-1">
+                                          <CheckCircle className="w-2.5 h-2.5" />
+                                          <span>Voto nominal confirmado</span>
+                                        </span>
+                                      </div>
+                                    </div>
+                                  </td>
+
+                                  {/* CANDIDATE VOTED (FANTASIA & CANDIDATO) */}
+                                  <td className="py-3 px-4">
+                                    <div className="flex items-center gap-2.5">
+                                      {candPhoto ? (
+                                        <img
+                                          src={candPhoto}
+                                          alt={v.candidateName}
+                                          className="w-9 h-9 rounded-lg object-cover border border-orange-500/40 flex-shrink-0"
+                                        />
+                                      ) : (
+                                        <div className="w-9 h-9 rounded-lg bg-black border border-white/10 flex items-center justify-center text-xs flex-shrink-0">
+                                          🎃
+                                        </div>
+                                      )}
+                                      <div>
+                                        <span className="font-cinzel font-bold text-orange-300 text-sm block">
+                                          {v.candidateName}
+                                        </span>
+                                        {matchedCand?.name && (
+                                          <span className="text-[11px] text-gray-400">
+                                            Participante: <strong className="text-gray-200">{matchedCand.name}</strong>
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </td>
+
+                                  {/* TIMESTAMP */}
+                                  <td className="py-3 px-4 text-gray-300 font-mono text-[11px] whitespace-nowrap">
+                                    <div className="flex items-center gap-1.5">
+                                      <Calendar className="w-3.5 h-3.5 text-orange-400" />
+                                      <span>{new Date(v.votedAt).toLocaleString('pt-BR')}</span>
+                                    </div>
+                                  </td>
+
+                                  {/* PC IDENTIFIER */}
+                                  <td className="py-3 px-4 text-gray-400 font-mono text-[11px]">
+                                    <span
+                                      title={v.deviceId}
+                                      className="px-2 py-0.5 rounded bg-black/60 border border-white/10 block max-w-[140px] truncate"
+                                    >
+                                      {v.deviceId}
+                                    </span>
+                                  </td>
+
+                                  {/* DELETE / INVALIDATE VOTE */}
+                                  <td className="py-3 px-4 text-right">
+                                    <button
+                                      type="button"
+                                      onClick={() => setVoteToDelete(v)}
+                                      className="p-1.5 rounded-lg bg-red-950/60 hover:bg-red-900 text-red-400 hover:text-white border border-red-500/40 transition-colors cursor-pointer"
+                                      title="Anular e remover este voto"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  /* VIEW 2: AGRUPADO POR FANTASIA (VOTANTES DE CADA UMA) */
+                  <div className="space-y-4">
+                    <div className="p-4 rounded-2xl bg-black/60 border border-orange-500/20">
+                      <h3 className="font-cinzel font-bold text-sm text-white flex items-center gap-2 mb-1">
+                        <Users className="w-4 h-4 text-orange-400" />
+                        <span>Votantes Agrupados por Fantasia</span>
+                      </h3>
+                      <p className="text-xs text-gray-400">
+                        Veja exatamente os nomes de todos os votantes que escolheram cada fantasia cadastrada.
                       </p>
                     </div>
-                  ) : filteredVotes.length === 0 ? (
-                    <div className="py-12 text-center text-xs text-gray-400">
-                      Nenhum registro encontrado para a busca "{voteSearchQuery}".
-                    </div>
-                  ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left text-xs">
-                        <thead className="bg-black/80 text-gray-400 uppercase font-cinzel text-[11px] border-b border-white/10">
-                          <tr>
-                            <th className="py-3 px-4 font-bold">Nº</th>
-                            <th className="py-3 px-4 font-bold text-orange-300">Nome Completo do Votante</th>
-                            <th className="py-3 px-4 font-bold text-white">Fantasia Escolhida</th>
-                            <th className="py-3 px-4 font-bold">Data & Horário</th>
-                            <th className="py-3 px-4 font-bold">Identificador do PC</th>
-                            <th className="py-3 px-4 font-bold text-right">Ação</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-white/5">
-                          {filteredVotes.map((v, idx) => {
-                            const matchedCand = candidates.find((c) => c.id === v.candidateId);
-                            const candPhoto = matchedCand?.photos?.[0];
 
-                            return (
-                              <tr key={v.id || idx} className="hover:bg-white/5 transition-colors">
-                                <td className="py-3 px-4 font-mono text-gray-500 font-bold">
-                                  {idx + 1}
-                                </td>
-
-                                {/* VOTER FULL NAME - Highlighted */}
-                                <td className="py-3 px-4">
-                                  <div className="flex items-center gap-2">
-                                    <div className="w-7 h-7 rounded-full bg-orange-600/30 border border-orange-500/50 flex items-center justify-center text-orange-400 flex-shrink-0">
-                                      <UserCheck className="w-3.5 h-3.5" />
-                                    </div>
-                                    <div>
-                                      <span className="font-bold text-white text-sm block">
-                                        {v.voterName || 'Votante Sem Nome'}
-                                      </span>
-                                      <span className="text-[10px] text-emerald-400 font-mono flex items-center gap-1">
-                                        <CheckCircle className="w-2.5 h-2.5" />
-                                        <span>Voto nominal confirmado</span>
-                                      </span>
-                                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {candidates.map((cand) => {
+                        const votersOfThisCand = votesList.filter((v) => v.candidateId === cand.id);
+                        return (
+                          <div
+                            key={cand.id}
+                            className="p-4 rounded-2xl bg-black/70 border border-white/10 space-y-3 shadow-lg"
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="w-12 h-12 rounded-xl overflow-hidden bg-black border border-orange-500/40 flex-shrink-0">
+                                {cand.photos && cand.photos[0] ? (
+                                  <img
+                                    src={cand.photos[0]}
+                                    alt={cand.costumeName}
+                                    className="w-full h-full object-cover"
+                                  />
+                                ) : (
+                                  <div className="w-full h-full flex items-center justify-center text-sm">
+                                    🎃
                                   </div>
-                                </td>
+                                )}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <h4 className="font-cinzel font-bold text-sm text-white truncate">
+                                  {cand.costumeName}
+                                </h4>
+                                <p className="text-xs text-gray-400">
+                                  Participante: <strong className="text-orange-300">{cand.name}</strong>
+                                </p>
+                              </div>
+                              <span className="px-2.5 py-1 rounded-xl bg-orange-950 border border-orange-500/50 text-orange-300 font-mono text-xs font-bold">
+                                {votersOfThisCand.length} {votersOfThisCand.length === 1 ? 'voto' : 'votos'}
+                              </span>
+                            </div>
 
-                                {/* CANDIDATE VOTED */}
-                                <td className="py-3 px-4">
-                                  <div className="flex items-center gap-2.5">
-                                    {candPhoto ? (
-                                      <img
-                                        src={candPhoto}
-                                        alt={v.candidateName}
-                                        className="w-8 h-8 rounded-lg object-cover border border-orange-500/40"
-                                      />
-                                    ) : (
-                                      <div className="w-8 h-8 rounded-lg bg-black border border-white/10 flex items-center justify-center text-xs">
-                                        🎃
-                                      </div>
-                                    )}
-                                    <span className="font-cinzel font-bold text-orange-300">
-                                      {v.candidateName}
+                            {/* List of voter names */}
+                            <div className="pt-2 border-t border-white/5 space-y-1.5">
+                              <span className="text-[11px] uppercase tracking-wider text-gray-400 font-bold block">
+                                Votantes que escolheram esta fantasia ({votersOfThisCand.length}):
+                              </span>
+                              {votersOfThisCand.length === 0 ? (
+                                <p className="text-xs text-gray-500 italic">
+                                  Nenhum voto registrado para esta fantasia ainda.
+                                </p>
+                              ) : (
+                                <div className="flex flex-wrap gap-1.5">
+                                  {votersOfThisCand.map((v) => (
+                                    <span
+                                      key={v.id || v.deviceId}
+                                      className="px-2.5 py-1 rounded-lg bg-emerald-950/70 border border-emerald-500/50 text-emerald-200 text-xs font-semibold inline-flex items-center gap-1.5"
+                                    >
+                                      <CheckCircle className="w-3 h-3 text-emerald-400 flex-shrink-0" />
+                                      <span>{v.voterName}</span>
                                     </span>
-                                  </div>
-                                </td>
-
-                                {/* TIMESTAMP */}
-                                <td className="py-3 px-4 text-gray-300 font-mono text-[11px] whitespace-nowrap">
-                                  <div className="flex items-center gap-1.5">
-                                    <Calendar className="w-3.5 h-3.5 text-gray-500" />
-                                    <span>{new Date(v.votedAt).toLocaleString('pt-BR')}</span>
-                                  </div>
-                                </td>
-
-                                {/* PC IDENTIFIER */}
-                                <td className="py-3 px-4 text-gray-400 font-mono text-[11px]">
-                                  <span
-                                    title={v.deviceId}
-                                    className="px-2 py-0.5 rounded bg-black/60 border border-white/10 block max-w-[140px] truncate"
-                                  >
-                                    {v.deviceId}
-                                  </span>
-                                </td>
-
-                                {/* DELETE / INVALIDATE VOTE */}
-                                <td className="py-3 px-4 text-right">
-                                  <button
-                                    type="button"
-                                    onClick={() => setVoteToDelete(v)}
-                                    className="p-1.5 rounded-lg bg-red-950/60 hover:bg-red-900 text-red-400 hover:text-white border border-red-500/40 transition-colors cursor-pointer"
-                                    title="Anular e remover este voto"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -1024,7 +1279,7 @@ ON CONFLICT (id) DO UPDATE SET
                           </span>
                         </h4>
                         <p className="text-[11px] text-gray-400">
-                          Banco de dados para votos nominais e as 14 fantasias oficiais
+                          Banco de dados para votos nominais e as fantasias cadastradas
                         </p>
                       </div>
                     </div>
@@ -1047,25 +1302,31 @@ ON CONFLICT (id) DO UPDATE SET
                       <button
                         type="button"
                         onClick={handleUploadToSupabase}
-                        disabled={isUploadingToSupabase}
+                        disabled={isUploadingToSupabase || candidates.length === 0}
                         className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold font-cinzel flex items-center gap-1.5 shadow-md shadow-emerald-700/40 cursor-pointer disabled:opacity-50 transition-all"
+                        title="Faz o upload das fantasias cadastradas no Supabase"
                       >
                         {isUploadingToSupabase ? (
                           <Loader2 className="w-3.5 h-3.5 animate-spin" />
                         ) : (
                           <UploadCloud className="w-3.5 h-3.5" />
                         )}
-                        <span>SUBIR 14 FANTASIAS AGORA</span>
+                        <span>Sincronizar Supabase ({candidates.length})</span>
                       </button>
 
                       <button
                         type="button"
-                        onClick={handleReload14Candidates}
-                        className="px-3 py-1.5 rounded-lg bg-purple-950/70 hover:bg-purple-900 border border-purple-500/50 text-purple-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
-                        title="Recarrega as 14 fantasias cadastradas na interface do app"
+                        onClick={handlePurgeFakeCandidates}
+                        disabled={isPurgingFakes}
+                        className="px-3 py-1.5 rounded-lg bg-red-950/70 hover:bg-red-900 border border-red-500/50 text-red-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors disabled:opacity-50"
+                        title="Remove quaisquer fantasias fakes ou testes"
                       >
-                        <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-                        <span>Carregar 14 Fantasias no App</span>
+                        {isPurgingFakes ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                        )}
+                        <span>Remover Fantasias Fakes</span>
                       </button>
 
                       <button
@@ -1313,38 +1574,61 @@ ON CONFLICT (id) DO UPDATE SET
                     </p>
                   ) : (
                     <div className="divide-y divide-white/10">
-                      {candidates.map((cand) => (
-                        <div
-                          key={cand.id}
-                          className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
-                        >
-                          <div className="flex items-center gap-3">
-                            <div className="w-14 h-14 rounded-xl overflow-hidden bg-black border border-white/15 flex-shrink-0">
-                              {cand.photos && cand.photos[0] ? (
-                                <img
-                                  src={cand.photos[0]}
-                                  alt={cand.costumeName}
-                                  className="w-full h-full object-cover"
-                                />
-                              ) : (
-                                <div className="w-full h-full flex items-center justify-center text-xs">
-                                  🎃
-                                </div>
-                              )}
-                            </div>
+                      {candidates.map((cand) => {
+                        const candVoters = votesList.filter((v) => v.candidateId === cand.id);
 
-                            <div>
-                              <h4 className="font-cinzel font-bold text-sm text-white line-clamp-1">
-                                {cand.costumeName}
-                              </h4>
-                              <p className="text-xs text-gray-400">
-                                Participante: <span className="text-orange-300 font-medium">{cand.name}</span> • {cand.photos.length} foto(s)
-                              </p>
-                              <span className="font-mono text-xs font-bold text-orange-400">
-                                🔥 {cand.votes} {cand.votes === 1 ? 'voto' : 'votos'}
-                              </span>
+                        return (
+                          <div
+                            key={cand.id}
+                            className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="w-14 h-14 rounded-xl overflow-hidden bg-black border border-white/15 flex-shrink-0">
+                                {cand.photos && cand.photos[0] ? (
+                                  <img
+                                    src={cand.photos[0]}
+                                    alt={cand.costumeName}
+                                    className="w-full h-full object-cover"
+                                  />
+                                ) : (
+                                  <div className="w-full h-full flex items-center justify-center text-xs">
+                                    🎃
+                                  </div>
+                                )}
+                              </div>
+
+                              <div>
+                                <h4 className="font-cinzel font-bold text-sm text-white line-clamp-1">
+                                  {cand.costumeName}
+                                </h4>
+                                <p className="text-xs text-gray-400">
+                                  Participante: <span className="text-orange-300 font-medium">{cand.name}</span> • {cand.photos.length} foto(s)
+                                </p>
+                                <span className="font-mono text-xs font-bold text-orange-400">
+                                  🔥 {cand.votes} {cand.votes === 1 ? 'voto' : 'votos'}
+                                </span>
+
+                                {/* Voter names who voted for this costume */}
+                                <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                                  <span className="text-[10px] text-gray-400 font-bold uppercase">
+                                    Votantes ({candVoters.length}):
+                                  </span>
+                                  {candVoters.length === 0 ? (
+                                    <span className="text-[10px] text-gray-500 italic">Nenhum voto ainda</span>
+                                  ) : (
+                                    candVoters.map((v) => (
+                                      <span
+                                        key={v.id || v.deviceId}
+                                        className="px-1.5 py-0.5 rounded bg-emerald-950/80 border border-emerald-500/40 text-[10px] text-emerald-300 font-medium inline-flex items-center gap-1"
+                                      >
+                                        <UserCheck className="w-2.5 h-2.5 text-emerald-400" />
+                                        {v.voterName}
+                                      </span>
+                                    ))
+                                  )}
+                                </div>
+                              </div>
                             </div>
-                          </div>
 
                           {/* EDIT & DELETE ACTION BUTTONS */}
                           <div className="flex items-center gap-2 self-end sm:self-center">
@@ -1367,7 +1651,8 @@ ON CONFLICT (id) DO UPDATE SET
                             </button>
                           </div>
                         </div>
-                      ))}
+                      );
+                    })}
                     </div>
                   )}
                 </div>
@@ -1472,30 +1757,6 @@ ON CONFLICT (id) DO UPDATE SET
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={() => setSqlModalTab('full')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                  sqlModalTab === 'full'
-                    ? 'bg-emerald-600 text-white shadow-md'
-                    : 'bg-black/60 text-gray-400 hover:text-white border border-white/10'
-                }`}
-              >
-                Completo (Tabelas + 14 Fantasias)
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setSqlModalTab('seed')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                  sqlModalTab === 'seed'
-                    ? 'bg-emerald-600 text-white shadow-md'
-                    : 'bg-black/60 text-gray-400 hover:text-white border border-white/10'
-                }`}
-              >
-                Apenas Seed das 14 Fantasias (INSERT)
-              </button>
-
-              <button
-                type="button"
                 onClick={() => setSqlModalTab('schema')}
                 className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                   sqlModalTab === 'schema'
@@ -1503,7 +1764,31 @@ ON CONFLICT (id) DO UPDATE SET
                     : 'bg-black/60 text-gray-400 hover:text-white border border-white/10'
                 }`}
               >
-                Apenas Tabelas & RLS
+                1. Estrutura RLS & RPC (cast_vote)
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSqlModalTab('reset')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  sqlModalTab === 'reset'
+                    ? 'bg-orange-600 text-white shadow-md'
+                    : 'bg-black/60 text-gray-400 hover:text-white border border-white/10'
+                }`}
+              >
+                2. Zerar Todos os Votos (SQL)
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSqlModalTab('full')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  sqlModalTab === 'full'
+                    ? 'bg-emerald-600 text-white shadow-md'
+                    : 'bg-black/60 text-gray-400 hover:text-white border border-white/10'
+                }`}
+              >
+                3. Script Completo
               </button>
             </div>
 
@@ -1544,7 +1829,7 @@ ON CONFLICT (id) DO UPDATE SET
                   ) : (
                     <>
                       <Copy className="w-4 h-4" />
-                      <span>COPIAR SQL DAS 14 FANTASIAS</span>
+                      <span>COPIAR SCRIPT SQL</span>
                     </>
                   )}
                 </button>

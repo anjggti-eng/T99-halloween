@@ -69,17 +69,17 @@ export const DatabaseStatusBar: React.FC<DatabaseStatusBarProps> = ({
             onClick={handleQuickUpload}
             disabled={isUploading}
             className="px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] flex items-center gap-1.5 shadow-md shadow-emerald-700/40 transition-all cursor-pointer disabled:opacity-50"
-            title="Upload das 14 fantasias oficiais para o Supabase (ou gera o Script SQL se houver bloqueio HTTPS)"
+            title="Sincroniza as fantasias reais cadastradas com o banco Supabase"
           >
             {isUploading ? (
               <>
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                <span>Subindo ao Supabase...</span>
+                <span>Sincronizando com Supabase...</span>
               </>
             ) : (
               <>
                 <UploadCloud className="w-3.5 h-3.5" />
-                <span>SUBIR NO SUPABASE (14 Fantasias)</span>
+                <span>SINCRONIZAR COM SUPABASE</span>
               </>
             )}
           </button>
@@ -91,7 +91,7 @@ export const DatabaseStatusBar: React.FC<DatabaseStatusBarProps> = ({
               title="Visualizar ou copiar scripts SQL para executar no Supabase Studio"
             >
               <Code2 className="w-3 h-3 text-emerald-400" />
-              <span>Ver SQL (14 Fantasias)</span>
+              <span>Ver Script SQL</span>
             </button>
           )}
 
