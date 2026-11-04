@@ -10,10 +10,14 @@ async function runTest() {
   const pollId = 'test_poll';
   const optionId = 'test_option';
   
-  // Cleanup
+  // Cleanup only test votes
   const votes = await getDocs(collection(db, 'votes'));
   const batch = writeBatch(db);
-  votes.forEach(v => batch.delete(v.ref));
+  votes.forEach(v => {
+    if (v.id.startsWith('vote_test_poll')) {
+      batch.delete(v.ref);
+    }
+  });
   
   // Seed
   batch.set(doc(db, 'polls', pollId), { title: 'Test' });

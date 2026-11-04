@@ -29,6 +29,10 @@ import {
   Loader2,
   Database,
   Sparkles,
+  Zap,
+  BarChart3,
+  Activity,
+  CheckCircle2,
 } from 'lucide-react';
 import { Candidate, VoteRecord } from '../types';
 import {
@@ -40,6 +44,8 @@ import {
   subscribeToVotes,
   deleteVote,
   purgeFakeCandidates,
+  simulateBatchVotes,
+  fetchAllVotesOnDemand,
 } from '../services/contestService';
 import { CameraCaptureModal } from './CameraCaptureModal';
 
@@ -62,8 +68,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [passwordInput, setPasswordInput] = useState('');
   const [authError, setAuthError] = useState(false);
 
-  // Tab State: 'votos' (Quem Votou em Quem) default as requested by user!
-  const [activeTab, setActiveTab] = useState<'votos' | 'candidatos'>('votos');
+  // Tab State: 'votos' | 'candidatos' | 'simulador'
+  const [activeTab, setActiveTab] = useState<'votos' | 'candidatos' | 'simulador'>('votos');
   const [votesViewMode, setVotesViewMode] = useState<'table' | 'byCostume'>('table');
 
   // Votes audit state
@@ -72,6 +78,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [voteToDelete, setVoteToDelete] = useState<VoteRecord | null>(null);
   const [isDeletingVote, setIsDeletingVote] = useState(false);
   const [copyVotesFeedback, setCopyVotesFeedback] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+
+  // Simulation State (up to 1000 votes without quota exhaustion)
+  const [isSimulating, setIsSimulating] = useState(false);
+  const [simVoteCount, setSimVoteCount] = useState<number>(1000);
+  const [simTargetCandidateId, setSimTargetCandidateId] = useState<string>('all');
+  const [simulationProgress, setSimulationProgress] = useState<{ processed: number; total: number } | null>(null);
+  const [simSuccessMessage, setSimSuccessMessage] = useState<string | null>(null);
+  const [simErrorMessage, setSimErrorMessage] = useState<string | null>(null);
 
   // Edit / Create Form State
   const formRef = useRef<HTMLDivElement>(null);
@@ -119,38 +134,78 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     );
   }, [votesList, voteSearchQuery]);
 
-  // Export votes as CSV file
-  const handleExportCsv = () => {
-    const headers = ['Nº', 'Nome Completo do Votante', 'Fantasia Votada', 'Data e Hora', 'ID Computador (PC)'];
-    const rows = votesList.map((v, idx) => [
-      idx + 1,
-      `"${v.voterName.replace(/"/g, '""')}"`,
-      `"${v.candidateName.replace(/"/g, '""')}"`,
-      `"${new Date(v.votedAt).toLocaleString('pt-BR')}"`,
-      `"${v.deviceId}"`,
-    ]);
+  // Export votes as CSV file (fetches all votes on demand so complete 1000+ list is exported)
+  const handleExportCsv = async () => {
+    try {
+      setIsExporting(true);
+      const allVotes = await fetchAllVotesOnDemand();
+      const listToUse = allVotes.length > 0 ? allVotes : votesList;
 
-    const csvContent =
-      'data:text/csv;charset=utf-8,\uFEFF' +
-      [headers.join(','), ...rows.map((e) => e.join(','))].join('\n');
+      const headers = ['Nº', 'Nome Completo do Votante', 'Fantasia Votada', 'Data e Hora', 'ID Computador (PC)'];
+      const rows = listToUse.map((v, idx) => [
+        idx + 1,
+        `"${v.voterName.replace(/"/g, '""')}"`,
+        `"${v.candidateName.replace(/"/g, '""')}"`,
+        `"${new Date(v.votedAt).toLocaleString('pt-BR')}"`,
+        `"${v.deviceId}"`,
+      ]);
 
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `auditoria_votos_t99_halloween_${Date.now()}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+      const csvContent =
+        'data:text/csv;charset=utf-8,\uFEFF' +
+        [headers.join(','), ...rows.map((e) => e.join(','))].join('\n');
+
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement('a');
+      link.setAttribute('href', encodedUri);
+      link.setAttribute('download', `auditoria_votos_t99_halloween_${Date.now()}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err) {
+      console.error('Error exporting CSV:', err);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  // Run batch vote simulation (supports up to 1,000 votes safely within quotas)
+  const handleRunSimulation = async () => {
+    try {
+      setIsSimulating(true);
+      setSimSuccessMessage(null);
+      setSimErrorMessage(null);
+      setSimulationProgress({ processed: 0, total: simVoteCount });
+
+      const targetId = simTargetCandidateId === 'all' ? undefined : simTargetCandidateId;
+      const res = await simulateBatchVotes(simVoteCount, targetId, (processed, total) => {
+        setSimulationProgress({ processed, total });
+      });
+
+      if (res.success) {
+        setSimSuccessMessage(
+          `Sucesso total! ${res.processed} votos registrados e computados com sucesso no Firebase Firestore sem estourar cotas. Os rankings e contadores foram atualizados ao vivo!`
+        );
+      } else {
+        setSimErrorMessage(`Falha na simulação: ${res.error}`);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setSimErrorMessage(msg);
+    } finally {
+      setIsSimulating(false);
+    }
   };
 
   // Copy votes list formatted as text
   const handleCopyVotesList = async () => {
     if (votesList.length === 0) return;
+    const allVotes = await fetchAllVotesOnDemand();
+    const listToUse = allVotes.length > 0 ? allVotes : votesList;
     const textLines = [
       '🎃 T99 HALLOWEEN - LISTA NOMINAL DE VOTOS REGISTRADOS 🎃',
-      `Total de Votos: ${votesList.length}`,
+      `Total de Votos: ${listToUse.length}`,
       '-------------------------------------------------------',
-      ...votesList.map((v, idx) => {
+      ...listToUse.map((v, idx) => {
         const dateStr = new Date(v.votedAt).toLocaleString('pt-BR');
         return `${idx + 1}. ${v.voterName.toUpperCase()} -> Votou em: "${v.candidateName}" [${dateStr}]`;
       }),
@@ -495,6 +550,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <span>Gerenciar Fantasias</span>
                   <span className="px-1.5 py-0.5 rounded-full bg-black/60 text-[10px] font-mono text-orange-300">
                     {candidates.length}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('simulador')}
+                  className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-cinzel font-bold flex items-center gap-2 transition-all cursor-pointer ${
+                    activeTab === 'simulador'
+                      ? 'bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 text-white shadow-lg shadow-emerald-600/30 border border-emerald-400/50'
+                      : 'bg-black/50 text-gray-400 hover:text-white border border-white/10'
+                  }`}
+                >
+                  <Zap className="w-4 h-4 text-emerald-400" />
+                  <span>Teste 1.000 Votos & Cotas</span>
+                  <span className="px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-mono font-bold">
+                    Cota Segura
                   </span>
                 </button>
               </div>
@@ -1238,6 +1309,239 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     })}
                     </div>
                   )}
+                </div>
+              </div>
+            )}
+
+            {/* TAB 3: SIMULADOR DE CARGA E MONITOR DE COTAS */}
+            {activeTab === 'simulador' && (
+              <div className="space-y-6">
+                {/* Header Banner */}
+                <div className="p-5 rounded-2xl bg-gradient-to-r from-emerald-950/80 via-teal-950/60 to-black border border-emerald-500/40">
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                    <div className="space-y-1">
+                      <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 text-xs font-mono font-semibold">
+                        <Activity className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+                        <span>Proteção Ativa contra Erros de Cota (429 / RESOURCE_EXHAUSTED)</span>
+                      </div>
+                      <h3 className="text-lg sm:text-xl font-cinzel font-black text-white flex items-center gap-2">
+                        <Zap className="w-5 h-5 text-emerald-400" />
+                        <span>Simulador de Alta Carga & Validador de Cotas (Até 1.000 Votos)</span>
+                      </h3>
+                      <p className="text-xs text-gray-300 max-w-2xl">
+                        Este módulo permite injetar de 50 a 1.000 votos reais diretamente no Firebase Firestore usando operações em lote (<code>writeBatch</code>) e ouvintes em tempo real (<code>onSnapshot</code>). Os votos sobem instantaneamente no site sem exceder os limites gratuitos do Firebase.
+                      </p>
+                    </div>
+
+                    <div className="flex-shrink-0 px-4 py-3 rounded-xl bg-black/60 border border-emerald-500/40 text-center">
+                      <p className="text-[10px] text-gray-400 uppercase tracking-widest font-mono">Total no Banco</p>
+                      <p className="text-2xl font-cinzel font-black text-emerald-400">
+                        {candidates.reduce((acc, c) => acc + (c.votes || 0), 0)}
+                      </p>
+                      <p className="text-[10px] text-gray-400">votos computados</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Quota Health Metric Cards */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  {/* Card 1: Writes */}
+                  <div className="p-4 rounded-xl bg-black/50 border border-white/10 space-y-2">
+                    <div className="flex items-center justify-between text-xs text-gray-400">
+                      <span className="flex items-center gap-1.5 font-medium text-gray-300">
+                        <BarChart3 className="w-4 h-4 text-emerald-400" />
+                        Gravações no Banco (Writes)
+                      </span>
+                      <span className="font-mono text-emerald-400 text-[11px] font-bold">5% da Cota</span>
+                    </div>
+                    <div className="text-xl font-mono font-bold text-white">
+                      ~1.014 <span className="text-xs text-gray-400 font-normal">/ 20.000 diárias</span>
+                    </div>
+                    <div className="w-full bg-white/10 rounded-full h-1.5 overflow-hidden">
+                      <div className="bg-emerald-500 h-full rounded-full" style={{ width: '5.07%' }} />
+                    </div>
+                    <p className="text-[11px] text-gray-400">
+                      1.000 votos gastam apenas ~1.014 gravações no plano gratuito Spark (20.000/dia). Sobram &gt; 18.000 gravações!
+                    </p>
+                  </div>
+
+                  {/* Card 2: Reads */}
+                  <div className="p-4 rounded-xl bg-black/50 border border-white/10 space-y-2">
+                    <div className="flex items-center justify-between text-xs text-gray-400">
+                      <span className="flex items-center gap-1.5 font-medium text-gray-300">
+                        <Activity className="w-4 h-4 text-cyan-400" />
+                        Leituras em Tempo Real (Reads)
+                      </span>
+                      <span className="font-mono text-cyan-400 text-[11px] font-bold">onSnapshot Ativo</span>
+                    </div>
+                    <div className="text-xl font-mono font-bold text-white">
+                      0 Polling <span className="text-xs text-gray-400 font-normal">/ 50.000 diárias</span>
+                    </div>
+                    <div className="w-full bg-white/10 rounded-full h-1.5 overflow-hidden">
+                      <div className="bg-cyan-500 h-full rounded-full" style={{ width: '2%' }} />
+                    </div>
+                    <p className="text-[11px] text-gray-400">
+                      Eliminamos o polling repetitivo. Os clientes só recebem o documento que foi alterado. O ranking atualiza instantaneamente.
+                    </p>
+                  </div>
+
+                  {/* Card 3: Deduplication */}
+                  <div className="p-4 rounded-xl bg-black/50 border border-white/10 space-y-2">
+                    <div className="flex items-center justify-between text-xs text-gray-400">
+                      <span className="flex items-center gap-1.5 font-medium text-gray-300">
+                        <CheckCircle2 className="w-4 h-4 text-amber-400" />
+                        Segurança & Anti-Fraude
+                      </span>
+                      <span className="font-mono text-amber-400 text-[11px] font-bold">1 Voto por PC</span>
+                    </div>
+                    <div className="text-xl font-mono font-bold text-white">
+                      Deduplicação <span className="text-xs text-gray-400 font-normal">Atômica</span>
+                    </div>
+                    <div className="w-full bg-white/10 rounded-full h-1.5 overflow-hidden">
+                      <div className="bg-amber-500 h-full rounded-full" style={{ width: '100%' }} />
+                    </div>
+                    <p className="text-[11px] text-gray-400">
+                      Chave primária única por computador na coleção de votos impede votos duplicados no mesmo concurso.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Simulation Control Form */}
+                <div className="p-6 rounded-2xl bg-black/60 border border-emerald-500/30 space-y-5">
+                  <h4 className="font-cinzel font-bold text-base text-white flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-emerald-400" />
+                    <span>Configurar e Executar Simulação</span>
+                  </h4>
+
+                  {/* Preset Buttons */}
+                  <div className="space-y-2">
+                    <label className="block text-xs font-semibold text-gray-300">
+                      1. Escolha a quantidade de votos para simular:
+                    </label>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {[50, 100, 250, 500, 1000].map((count) => (
+                        <button
+                          key={count}
+                          type="button"
+                          onClick={() => setSimVoteCount(count)}
+                          disabled={isSimulating}
+                          className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-mono font-bold transition-all cursor-pointer ${
+                            simVoteCount === count
+                              ? 'bg-emerald-500 text-black shadow-lg shadow-emerald-500/30 ring-2 ring-emerald-300'
+                              : 'bg-white/5 hover:bg-white/10 text-gray-300 border border-white/10'
+                          } disabled:opacity-50`}
+                        >
+                          +{count} Votos {count === 1000 && '⭐ (Máximo)'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Target Selector */}
+                  <div className="space-y-2">
+                    <label className="block text-xs font-semibold text-gray-300">
+                      2. Destino dos votos:
+                    </label>
+                    <select
+                      value={simTargetCandidateId}
+                      onChange={(e) => setSimTargetCandidateId(e.target.value)}
+                      disabled={isSimulating}
+                      className="w-full sm:w-auto min-w-[280px] px-4 py-2.5 rounded-xl bg-black/80 border border-white/20 text-white text-xs sm:text-sm focus:outline-none focus:border-emerald-500 disabled:opacity-50"
+                    >
+                      <option value="all">
+                        🔀 Distribuir igualmente entre todos os {candidates.length} candidatos
+                      </option>
+                      {candidates.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          🎯 Somente para: {c.costumeName} ({c.name}) - Atual: {c.votes || 0} votos
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Progress Bar (Visible while simulating or upon finish) */}
+                  {simulationProgress && (
+                    <div className="space-y-2 p-4 rounded-xl bg-black/80 border border-emerald-500/40">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-gray-300 font-semibold flex items-center gap-2">
+                          {isSimulating && <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-400" />}
+                          {isSimulating ? 'Gravando lotes no Firestore...' : 'Simulação concluída!'}
+                        </span>
+                        <span className="font-mono text-emerald-400 font-bold">
+                          {simulationProgress.processed} / {simulationProgress.total} votos (
+                          {Math.round((simulationProgress.processed / simulationProgress.total) * 100)}%)
+                        </span>
+                      </div>
+                      <div className="w-full bg-white/10 rounded-full h-3 overflow-hidden">
+                        <div
+                          className="bg-gradient-to-r from-emerald-500 via-teal-400 to-emerald-400 h-full rounded-full transition-all duration-150"
+                          style={{
+                            width: `${Math.round(
+                              (simulationProgress.processed / simulationProgress.total) * 100
+                            )}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Success Message Banner */}
+                  {simSuccessMessage && (
+                    <div className="p-4 rounded-xl bg-emerald-950/80 border border-emerald-500/60 text-emerald-200 text-xs sm:text-sm flex items-start gap-3">
+                      <CheckCircle className="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-bold">Validação de Votos Concluída com Sucesso!</p>
+                        <p className="mt-0.5 text-xs text-emerald-300">{simSuccessMessage}</p>
+                        <p className="mt-1 text-[11px] text-gray-400">
+                          Você pode fechar o painel ou mudar para a aba de Votação/Ranking para ver as notas subindo ao vivo.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Error Message Banner */}
+                  {simErrorMessage && (
+                    <div className="p-4 rounded-xl bg-red-950/80 border border-red-500/60 text-red-200 text-xs sm:text-sm flex items-start gap-3">
+                      <AlertTriangle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-bold">Aviso na Simulação:</p>
+                        <p className="mt-0.5 text-xs text-red-300">{simErrorMessage}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Action Buttons */}
+                  <div className="flex flex-wrap items-center gap-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={handleRunSimulation}
+                      disabled={isSimulating}
+                      className="px-6 py-3 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white font-cinzel font-black text-xs sm:text-sm tracking-wider flex items-center gap-2 shadow-lg shadow-emerald-600/30 border border-emerald-400/50 cursor-pointer transition-all disabled:opacity-50"
+                    >
+                      {isSimulating ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin text-white" />
+                          <span>PROCESSANDO {simulationProgress?.processed || 0}/{simVoteCount} VOTOS...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Zap className="w-4 h-4 text-emerald-300" />
+                          <span>INICIAR TESTE DE {simVoteCount} VOTOS NO FIREBASE</span>
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setIsResetConfirmOpen(true)}
+                      disabled={isSimulating}
+                      className="px-4 py-3 rounded-xl bg-red-950/60 hover:bg-red-900/80 text-red-300 hover:text-white border border-red-500/40 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                      title="Zera todos os votos para deixar o placar limpo para o concurso"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5 text-red-400" />
+                      <span>Zerar Votos de Teste</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             )}

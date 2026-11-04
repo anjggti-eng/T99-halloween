@@ -17,8 +17,6 @@ import {
   subscribeToCandidates,
   checkDeviceVote,
   castVote,
-  resetAllVotes,
-  purgeFakeCandidates,
 } from './services/contestService';
 import { getDeviceId, getLocalVote, setLocalVote, clearLocalVote, LocalVoteInfo } from './utils/device';
 import { spookyAudio } from './utils/audio';
@@ -62,21 +60,6 @@ export default function App() {
 
   // Initialize Device and Listeners
   useEffect(() => {
-    // Zero all votes as requested: resets vote counters and vote registry
-    if (typeof window !== 'undefined' && localStorage.getItem('t99_user_requested_zero_v6') !== 'true') {
-      localStorage.setItem('t99_user_requested_zero_v6', 'true');
-      clearLocalVote();
-      setMyVote(null);
-      setCandidates((prev) => prev.map((c) => ({ ...c, votes: 0 })));
-      resetAllVotes().catch((e: unknown) => console.warn('Reset notice:', e));
-    }
-
-    // Purge fake mock placeholder costumes
-    if (typeof window !== 'undefined' && localStorage.getItem('t99_purged_fake_costumes_v3') !== 'true') {
-      localStorage.setItem('t99_purged_fake_costumes_v3', 'true');
-      purgeFakeCandidates().catch((e) => console.warn('Purge fake notice:', e));
-    }
-
     const id = getDeviceId();
     setDeviceId(id);
 
