@@ -60,20 +60,20 @@ export default function App() {
     }, 4500);
   }, []);
 
-  // Initialize Device and Listeners (NO automatic candidate deletion)
+  // Initialize Device and Listeners
   useEffect(() => {
     // Zero all votes as requested: resets vote counters and vote registry
-    if (typeof window !== 'undefined' && localStorage.getItem('t99_user_requested_zero_v5') !== 'true') {
-      localStorage.setItem('t99_user_requested_zero_v5', 'true');
+    if (typeof window !== 'undefined' && localStorage.getItem('t99_user_requested_zero_v6') !== 'true') {
+      localStorage.setItem('t99_user_requested_zero_v6', 'true');
       clearLocalVote();
       setMyVote(null);
       setCandidates((prev) => prev.map((c) => ({ ...c, votes: 0 })));
-      resetAllVotes().catch((e: unknown) => console.warn('Supabase reset notice:', e));
+      resetAllVotes().catch((e: unknown) => console.warn('Reset notice:', e));
     }
 
-    // Purge fake mock placeholder costumes (user requested: forbidden to upload fake fantasies)
-    if (typeof window !== 'undefined' && localStorage.getItem('t99_purged_fake_costumes_v2') !== 'true') {
-      localStorage.setItem('t99_purged_fake_costumes_v2', 'true');
+    // Purge fake mock placeholder costumes
+    if (typeof window !== 'undefined' && localStorage.getItem('t99_purged_fake_costumes_v3') !== 'true') {
+      localStorage.setItem('t99_purged_fake_costumes_v3', 'true');
       purgeFakeCandidates().catch((e) => console.warn('Purge fake notice:', e));
     }
 
@@ -86,7 +86,7 @@ export default function App() {
       setMyVote(local);
     }
 
-    // Remote verify from Supabase
+    // Remote verify from Firestore
     checkDeviceVote(id)
       .then((serverVote) => {
         if (serverVote) {
@@ -109,19 +109,10 @@ export default function App() {
       });
 
     // Subscribe to Candidates (persisted permanently until manual delete)
-    const unsubscribe = subscribeToCandidates(
-      (list) => {
+    const unsubscribe = subscribeToCandidates((list) => {
         setCandidates(list);
         setIsLoading(false);
-      },
-      (err: unknown) => {
-        const errorObj = err as { isQuota?: boolean; rawError?: unknown };
-        if (errorObj?.isQuota || (err instanceof Error && err.message.includes('Quota exceeded'))) {
-          setIsQuotaExceeded(true);
-        }
-        setIsLoading(false);
-      }
-    );
+      });
 
     // Secret Admin keyboard shortcut: Ctrl + Shift + H or Ctrl + Shift + A
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -451,7 +442,7 @@ export default function App() {
           </div>
 
           <p className="text-gray-400 max-w-md mx-auto text-[11px] leading-relaxed">
-            Aplicativo assombrado de votação de melhor fantasia de Halloween com ranking em tempo real sincronizado via Supabase Self-Hosted.
+            Aplicativo assombrado de votação de melhor fantasia de Halloween com ranking em tempo real sincronizado via Firebase Firestore.
           </p>
 
           <div className="pt-2 flex flex-wrap items-center justify-center gap-4 text-[11px]">

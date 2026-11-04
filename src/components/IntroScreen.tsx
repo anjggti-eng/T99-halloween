@@ -17,20 +17,29 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({ onEnter }) => {
     if (!video) return;
 
     video.currentTime = 0;
-    // Attempt autoplay with sound
-    video.muted = false;
-    const playPromise = video.play();
+    // Always start muted to guarantee smooth autoplay across all browsers without abort errors
+    video.muted = true;
+    setIsAudioMuted(true);
+    setNeedsSoundInteraction(true);
 
+    const playPromise = video.play();
     if (playPromise !== undefined) {
       playPromise.catch((error) => {
-        console.warn('Browser blocked unmuted autoplay, playing muted with audio prompt:', error);
-        // Autoplay muted immediately so the screen is never blocked
-        video.muted = true;
-        setIsAudioMuted(true);
-        setNeedsSoundInteraction(true);
-        video.play().catch((e) => console.error('Video autoplay failed:', e));
+        if (error?.name !== 'AbortError') {
+          console.warn('Video autoplay notice:', error?.message || error);
+        }
       });
     }
+
+    return () => {
+      if (video) {
+        try {
+          video.pause();
+        } catch {
+          // ignore
+        }
+      }
+    };
   }, []);
 
   const unmuteSound = () => {
@@ -51,7 +60,11 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({ onEnter }) => {
   const handleSkip = (e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     if (videoRef.current) {
-      videoRef.current.pause();
+      try {
+        videoRef.current.pause();
+      } catch {
+        // ignore
+      }
     }
     spookyAudio.startAmbient();
     onEnter();
@@ -67,6 +80,7 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({ onEnter }) => {
         ref={videoRef}
         src="/assets/aistudio/Bruxa_assusta_com_risada_sombria_ad122cfa_aeeabed5.mp4"
         autoPlay
+        muted
         playsInline
         onEnded={handleVideoEnd}
         className="w-full h-full object-cover"

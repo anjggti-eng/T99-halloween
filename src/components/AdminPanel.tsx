@@ -39,11 +39,8 @@ import {
   purgeAllCandidatesAndVotes,
   subscribeToVotes,
   deleteVote,
-  uploadCandidatesToSupabase,
-  testSupabaseConnection,
   purgeFakeCandidates,
 } from '../services/contestService';
-import { SUPABASE_URL } from '../supabase/config';
 import { CameraCaptureModal } from './CameraCaptureModal';
 
 interface AdminPanelProps {
@@ -94,16 +91,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   // Reset Confirmation Modal
   const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
-
-  // Supabase SQL script modal & Seed states
-  const [showSqlModal, setShowSqlModal] = useState(false);
-  const [sqlModalTab, setSqlModalTab] = useState<'full' | 'reset' | 'schema'>('full');
-  const [sqlCopied, setSqlCopied] = useState(false);
-  const [isUploadingToSupabase, setIsUploadingToSupabase] = useState(false);
   const [isPurgingFakes, setIsPurgingFakes] = useState(false);
-  const [supabaseSyncResult, setSupabaseSyncResult] = useState<{ success: boolean; message: string } | null>(null);
-  const [isTestingSupabase, setIsTestingSupabase] = useState(false);
-  const [supabaseConnInfo, setSupabaseConnInfo] = useState<{ connected: boolean; count?: number; latencyMs?: number; error?: string } | null>(null);
 
   // Subscribe to all votes when admin is open and authenticated
   useEffect(() => {
@@ -118,292 +106,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     };
   }, [isOpen, isAuthenticated]);
 
-  const SUPABASE_SCHEMA_SQL = `-- ==============================================================================
--- T99 HALLOWEEN - SUPABASE SCHEMA & HARDENED RLS POLICIES
--- Instância Self-Hosted: http://192.168.0.179:8000
--- Segurança: Políticas RLS Estritas + Operação Autorizada de Voto (cast_vote)
--- ==============================================================================
-
--- 1. Tabela de Candidatos e Fantasias
-CREATE TABLE IF NOT EXISTS public.candidates (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  costume_name TEXT NOT NULL,
-  category TEXT DEFAULT 'Todas',
-  description TEXT DEFAULT '',
-  photos JSONB DEFAULT '[]'::jsonb,
-  votes INTEGER DEFAULT 0 CHECK (votes >= 0),
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- 2. Tabela de Votos Nominais Únicos por Dispositivo (PC)
-CREATE TABLE IF NOT EXISTS public.votes (
-  id TEXT PRIMARY KEY,
-  device_id TEXT NOT NULL,
-  voter_name TEXT NOT NULL,
-  candidate_id TEXT NOT NULL REFERENCES public.candidates(id) ON DELETE CASCADE,
-  candidate_name TEXT NOT NULL,
-  voted_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Garantir coluna voter_name e índice único para integridade
-ALTER TABLE public.votes ADD COLUMN IF NOT EXISTS voter_name TEXT DEFAULT '';
-CREATE UNIQUE INDEX IF NOT EXISTS votes_device_id_unique ON public.votes (device_id);
-
--- ==============================================================================
--- 3. POLÍTICAS RLS (ROW LEVEL SECURITY) RESTRITAS
--- ==============================================================================
-ALTER TABLE public.candidates ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.votes ENABLE ROW LEVEL SECURITY;
-
--- Limpar políticas antigas permissivas
-DROP POLICY IF EXISTS "Allow public read candidates" ON public.candidates;
-DROP POLICY IF EXISTS "Allow public insert candidates" ON public.candidates;
-DROP POLICY IF EXISTS "Allow public update candidates" ON public.candidates;
-DROP POLICY IF EXISTS "Allow public delete candidates" ON public.candidates;
-DROP POLICY IF EXISTS "Deny public update candidates" ON public.candidates;
-DROP POLICY IF EXISTS "Deny public delete candidates" ON public.candidates;
-
-DROP POLICY IF EXISTS "Allow public read votes" ON public.votes;
-DROP POLICY IF EXISTS "Allow public insert votes" ON public.votes;
-DROP POLICY IF EXISTS "Allow public update votes" ON public.votes;
-DROP POLICY IF EXISTS "Allow public delete votes" ON public.votes;
-DROP POLICY IF EXISTS "Deny public update votes" ON public.votes;
-DROP POLICY IF EXISTS "Deny public delete votes" ON public.votes;
-
--- A. Políticas para CANDIDATES:
-CREATE POLICY "Allow public read candidates"
-  ON public.candidates FOR SELECT
-  TO anon, authenticated
-  USING (true);
-
-CREATE POLICY "Allow public insert candidates"
-  ON public.candidates FOR INSERT
-  TO anon, authenticated
-  WITH CHECK (true);
-
-CREATE POLICY "Allow public update candidates"
-  ON public.candidates FOR UPDATE
-  TO anon, authenticated
-  USING (true);
-
-CREATE POLICY "Allow public delete candidates"
-  ON public.candidates FOR DELETE
-  TO anon, authenticated
-  USING (true);
-
--- B. Políticas para VOTES:
-CREATE POLICY "Allow public read votes"
-  ON public.votes FOR SELECT
-  TO anon, authenticated
-  USING (true);
-
-CREATE POLICY "Allow public insert votes"
-  ON public.votes FOR INSERT
-  TO anon, authenticated
-  WITH CHECK (
-    length(trim(voter_name)) >= 3 AND
-    length(trim(device_id)) >= 5 AND
-    length(trim(candidate_id)) >= 3
-  );
-
--- Bloqueio total de edição de votos registrados (Voto é imutável)
-CREATE POLICY "Deny public update votes"
-  ON public.votes FOR UPDATE
-  TO anon, authenticated
-  USING (false);
-
-CREATE POLICY "Allow public delete votes"
-  ON public.votes FOR DELETE
-  TO anon, authenticated
-  USING (true);
-
--- ==============================================================================
--- 4. OPERAÇÃO AUTORIZADA DE VOTAÇÃO (RPC COM SECURITY DEFINER)
--- ==============================================================================
-CREATE OR REPLACE FUNCTION public.cast_vote(
-  p_device_id TEXT,
-  p_voter_name TEXT,
-  p_candidate_id TEXT,
-  p_candidate_name TEXT
-)
-RETURNS JSONB
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-DECLARE
-  v_vote_id TEXT;
-  v_clean_device TEXT;
-  v_clean_name TEXT;
-  v_now TIMESTAMPTZ := NOW();
-BEGIN
-  v_clean_device := trim(COALESCE(p_device_id, ''));
-  v_clean_name := trim(COALESCE(p_voter_name, ''));
-
-  IF length(v_clean_name) < 3 THEN
-    RAISE EXCEPTION 'Nome completo do votante é obrigatório (mínimo de 3 caracteres).';
-  END IF;
-
-  IF length(v_clean_device) < 5 THEN
-    RAISE EXCEPTION 'Dispositivo inválido para votação.';
-  END IF;
-
-  IF EXISTS (SELECT 1 FROM public.votes WHERE device_id = v_clean_device) THEN
-    RAISE EXCEPTION 'Este computador já registrou um voto no concurso T99 Halloween!';
-  END IF;
-
-  IF NOT EXISTS (SELECT 1 FROM public.candidates WHERE id = p_candidate_id) THEN
-    RAISE EXCEPTION 'A fantasia selecionada não foi encontrada no concurso.';
-  END IF;
-
-  v_vote_id := 'vote_' || regexp_replace(v_clean_device, '[^a-zA-Z0-9_-]', '_', 'g');
-  INSERT INTO public.votes (id, device_id, voter_name, candidate_id, candidate_name, voted_at)
-  VALUES (v_vote_id, v_clean_device, v_clean_name, p_candidate_id, trim(p_candidate_name), v_now);
-
-  UPDATE public.candidates
-  SET votes = COALESCE(votes, 0) + 1
-  WHERE id = p_candidate_id;
-
-  RETURN jsonb_build_object(
-    'success', true,
-    'vote_id', v_vote_id,
-    'voter_name', v_clean_name,
-    'candidate_id', p_candidate_id,
-    'voted_at', v_now
-  );
-END;
-$$;
-
-GRANT EXECUTE ON FUNCTION public.cast_vote(TEXT, TEXT, TEXT, TEXT) TO anon, authenticated;
-
--- ==============================================================================
--- 5. HABILITAR CANAL REALTIME DO SUPABASE
--- ==============================================================================
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_publication_tables 
-    WHERE pubname = 'supabase_realtime' AND tablename = 'candidates'
-  ) THEN
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.candidates;
-  END IF;
-
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_publication_tables 
-    WHERE pubname = 'supabase_realtime' AND tablename = 'votes'
-  ) THEN
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.votes;
-  END IF;
-END $$;`;
-
-  const SUPABASE_RESET_SQL = `-- ==============================================================================
--- T99 HALLOWEEN - SCRIPT SQL PARA ZERAR TODOS OS VOTOS NO SUPABASE
--- Executar no SQL Editor do Supabase Studio (http://192.168.0.179:8000)
--- ==============================================================================
-
--- 1. Zera contadores de todas as fantasias cadastradas
-UPDATE public.candidates
-SET votes = 0;
-
--- 2. Limpa a ata de votos nominais para liberar os computadores para votar novamente
-TRUNCATE TABLE public.votes;
-
--- Confirmar resultado
-SELECT 'Sucesso! Todos os votos foram zerados no Supabase' AS status;`;
-
-  const SUPABASE_FULL_SQL = SUPABASE_SCHEMA_SQL + `\n\n` + SUPABASE_RESET_SQL;
-
-  const getActiveSqlScript = () => {
-    if (sqlModalTab === 'reset') return SUPABASE_RESET_SQL;
-    if (sqlModalTab === 'schema') return SUPABASE_SCHEMA_SQL;
-    return SUPABASE_FULL_SQL;
-  };
-
-  const copySqlToClipboard = async () => {
-    try {
-      await navigator.clipboard.writeText(getActiveSqlScript());
-      setSqlCopied(true);
-      setTimeout(() => setSqlCopied(false), 2500);
-    } catch {
-      // fallback
-    }
-  };
-
-  const handleDownloadSql = () => {
-    const blob = new Blob([getActiveSqlScript()], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = sqlModalTab === 'reset' ? 't99_zerar_votos.sql' : 't99_supabase_hardened_rls_cast_vote.sql';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  };
-
-  // Direct Upload to Supabase Action (Uploads ONLY real registered candidates)
-  const handleUploadToSupabase = async () => {
-    try {
-      setIsUploadingToSupabase(true);
-      setSupabaseSyncResult(null);
-      const res = await uploadCandidatesToSupabase(candidates);
-      if (res.success) {
-        setSupabaseSyncResult({
-          success: true,
-          message: `Sucesso! ${res.count} fantasias cadastradas foram sincronizadas e salvas no Supabase (${SUPABASE_URL}).`,
-        });
-      } else {
-        const isMixedContent =
-          String(res.error).includes('Failed to fetch') ||
-          String(res.error).includes('NetworkError');
-        setSupabaseSyncResult({
-          success: false,
-          message: isMixedContent
-            ? `Seu navegador bloqueou a conexão HTTP interna com ${SUPABASE_URL} (bloqueio de segurança HTTPS -> HTTP). Clique no botão "Script SQL" abaixo para rodar no Supabase Studio!`
-            : `Aviso ao subir para o Supabase: ${res.error || 'Verifique se a rede local tem acesso a ' + SUPABASE_URL}.`,
-        });
-      }
-    } catch (err: any) {
-      setSupabaseSyncResult({
-        success: false,
-        message: `Aviso: Seu navegador bloqueou a requisição direta para ${SUPABASE_URL}. Abra o Script SQL e execute no Supabase Studio.`,
-      });
-    } finally {
-      setIsUploadingToSupabase(false);
-    }
-  };
-
-  // Purge all fake placeholder candidates
-  const handlePurgeFakeCandidates = async () => {
-    try {
-      setIsPurgingFakes(true);
-      const res = await purgeFakeCandidates();
-      setSuccessMsg(`Fantasias fakes purgadas com sucesso do sistema (${res.count} itens limpos)!`);
-      setTimeout(() => setSuccessMsg(null), 4000);
-    } catch (err: any) {
-      setFormError(`Erro ao remover fakes: ${err?.message || err}`);
-    } finally {
-      setIsPurgingFakes(false);
-    }
-  };
-
-  // Test connection to user's Supabase instance
-  const handleTestSupabase = async () => {
-    setIsTestingSupabase(true);
-    setSupabaseConnInfo(null);
-    try {
-      const res = await testSupabaseConnection();
-      setSupabaseConnInfo(res);
-    } catch (err: any) {
-      setSupabaseConnInfo({
-        connected: false,
-        error: 'Bloqueio de navegador HTTPS -> HTTP local (Mixed Content)',
-      });
-    } finally {
-      setIsTestingSupabase(false);
-    }
-  };
 
   // Filtered votes by search query
   const filteredVotes = useMemo(() => {
@@ -660,6 +362,19 @@ SELECT 'Sucesso! Todos os votos foram zerados no Supabase' AS status;`;
     }
   };
 
+  const handlePurgeFakeCandidates = async () => {
+    if (window.confirm('Tem certeza que deseja remover as fantasias de teste?')) {
+      try {
+        setIsPurgingFakes(true);
+        await purgeFakeCandidates();
+      } catch (err) {
+        console.error('Purge fake error:', err);
+      } finally {
+        setIsPurgingFakes(false);
+      }
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/90 backdrop-blur-md overflow-y-auto">
       <motion.div
@@ -686,7 +401,7 @@ SELECT 'Sucesso! Todos os votos foram zerados no Supabase' AS status;`;
                 PAINEL ADMINISTRATIVO T99
               </h2>
               <p className="text-xs text-gray-400">
-                Gerenciamento de Fantasias & Auditoria Nominal de Votos (Supabase Self-Hosted)
+                Gerenciamento de Fantasias & Auditoria Nominal de Votos (Firebase Firestore)
               </p>
             </div>
           </div>
@@ -802,27 +517,6 @@ SELECT 'Sucesso! Todos os votos foram zerados no Supabase' AS status;`;
                   <span>Remover Fantasias Fakes</span>
                 </button>
 
-                {/* SINCRONIZAR NO SUPABASE */}
-                <button
-                  type="button"
-                  onClick={handleUploadToSupabase}
-                  disabled={isUploadingToSupabase || candidates.length === 0}
-                  className="px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold font-cinzel flex items-center gap-1.5 cursor-pointer shadow-lg shadow-emerald-700/40 border border-emerald-400/50 transition-all disabled:opacity-50"
-                  title="Sincroniza apenas as fantasias reais cadastradas no Supabase"
-                >
-                  {isUploadingToSupabase ? (
-                    <>
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      <span>Sincronizando...</span>
-                    </>
-                  ) : (
-                    <>
-                      <UploadCloud className="w-3.5 h-3.5 text-white" />
-                      <span>Sincronizar Supabase ({candidates.length})</span>
-                    </>
-                  )}
-                </button>
-
                 <button
                   type="button"
                   onClick={onLocalVoteCleared}
@@ -831,15 +525,6 @@ SELECT 'Sucesso! Todos os votos foram zerados no Supabase' AS status;`;
                 >
                   <RotateCcw className="w-3.5 h-3.5" />
                   <span>Limpar Meu PC (Teste)</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setShowSqlModal(true)}
-                  className="px-3 py-1.5 rounded-lg bg-emerald-950/70 hover:bg-emerald-900 border border-emerald-500/50 text-emerald-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
-                >
-                  <Code2 className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Script SQL</span>
                 </button>
 
                 <button
@@ -862,59 +547,6 @@ SELECT 'Sucesso! Todos os votos foram zerados no Supabase' AS status;`;
                 </button>
               </div>
             </div>
-
-            {/* Supabase Upload / Sync Result Banner */}
-            {supabaseSyncResult && (
-              <div
-                className={`p-4 rounded-xl border text-xs font-medium flex items-start justify-between gap-3 ${
-                  supabaseSyncResult.success
-                    ? 'bg-emerald-950/80 border-emerald-500 text-emerald-200'
-                    : 'bg-amber-950/90 border-amber-500 text-amber-200'
-                }`}
-              >
-                <div className="flex items-start gap-2.5">
-                  {supabaseSyncResult.success ? (
-                    <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
-                  ) : (
-                    <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
-                  )}
-                  <div className="space-y-1.5">
-                    <p className="font-bold text-sm">{supabaseSyncResult.message}</p>
-                    <p className="text-[11px] opacity-80">
-                      Instância configurada: <code className="font-mono text-white">{SUPABASE_URL}</code>
-                    </p>
-                    {!supabaseSyncResult.success && (
-                      <div className="pt-1 flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setShowSqlModal(true)}
-                          className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-md"
-                        >
-                          <Code2 className="w-3.5 h-3.5" />
-                          <span>ABRIR SCRIPT SQL (RLS & CAST_VOTE)</span>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={handleDownloadSql}
-                          className="px-3 py-1.5 rounded-lg bg-black/60 hover:bg-black/80 border border-amber-400/50 text-amber-200 font-semibold text-xs flex items-center gap-1.5 cursor-pointer"
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                          <span>Baixar Arquivo .sql</span>
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setSupabaseSyncResult(null)}
-                  className="p-1 rounded text-gray-400 hover:text-white"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            )}
 
             {/* TAB 1: AUDITORIA DE VOTOS POR NOME (REQUESTED FEATURE) */}
             {activeTab === 'votos' && (
@@ -1264,22 +896,22 @@ SELECT 'Sucesso! Todos os votos foram zerados no Supabase' AS status;`;
             {/* TAB 2: GERENCIAR FANTASIAS (CANDIDATOS) */}
             {activeTab === 'candidatos' && (
               <div className="space-y-6">
-                {/* Supabase Integration & Quick Seed Card */}
-                <div className="p-4 sm:p-5 rounded-2xl bg-[#091512] border border-emerald-500/40 space-y-3 shadow-xl">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-emerald-500/20 pb-3">
+                {/* Firebase Firestore Status Card */}
+                <div className="p-4 sm:p-5 rounded-2xl bg-[#0a1215] border border-orange-500/40 space-y-3 shadow-xl">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-orange-500/20 pb-3">
                     <div className="flex items-center gap-2.5">
-                      <div className="w-9 h-9 rounded-xl bg-emerald-950 border border-emerald-500/60 flex items-center justify-center text-emerald-400">
-                        <Server className="w-4 h-4" />
+                      <div className="w-9 h-9 rounded-xl bg-orange-950 border border-orange-500/60 flex items-center justify-center text-orange-400">
+                        <Database className="w-4 h-4" />
                       </div>
                       <div>
-                        <h4 className="font-cinzel font-bold text-sm text-emerald-300 flex items-center gap-2">
-                          <span>Supabase Self-Hosted</span>
+                        <h4 className="font-cinzel font-bold text-sm text-orange-300 flex items-center gap-2">
+                          <span>Banco de Dados Cloud Firestore</span>
                           <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 text-[10px] font-mono border border-emerald-500/30">
-                            {SUPABASE_URL}
+                            ONLINE • SEGURO
                           </span>
                         </h4>
                         <p className="text-[11px] text-gray-400">
-                          Banco de dados para votos nominais e as fantasias cadastradas
+                          Sincronização de votos nominais e candidatos registrados ({candidates.length} fantasias)
                         </p>
                       </div>
                     </div>
@@ -1287,38 +919,9 @@ SELECT 'Sucesso! Todos os votos foram zerados no Supabase' AS status;`;
                     <div className="flex flex-wrap items-center gap-2">
                       <button
                         type="button"
-                        onClick={handleTestSupabase}
-                        disabled={isTestingSupabase}
-                        className="px-3 py-1.5 rounded-lg bg-black/60 hover:bg-black/90 border border-emerald-500/40 text-emerald-300 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
-                      >
-                        {isTestingSupabase ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        ) : (
-                          <RotateCcw className="w-3.5 h-3.5" />
-                        )}
-                        <span>Testar Conexão</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={handleUploadToSupabase}
-                        disabled={isUploadingToSupabase || candidates.length === 0}
-                        className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold font-cinzel flex items-center gap-1.5 shadow-md shadow-emerald-700/40 cursor-pointer disabled:opacity-50 transition-all"
-                        title="Faz o upload das fantasias cadastradas no Supabase"
-                      >
-                        {isUploadingToSupabase ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        ) : (
-                          <UploadCloud className="w-3.5 h-3.5" />
-                        )}
-                        <span>Sincronizar Supabase ({candidates.length})</span>
-                      </button>
-
-                      <button
-                        type="button"
                         onClick={handlePurgeFakeCandidates}
                         disabled={isPurgingFakes}
-                        className="px-3 py-1.5 rounded-lg bg-red-950/70 hover:bg-red-900 border border-red-500/50 text-red-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors disabled:opacity-50"
+                        className="px-3.5 py-1.5 rounded-lg bg-red-950/70 hover:bg-red-900 border border-red-500/50 text-red-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors disabled:opacity-50"
                         title="Remove quaisquer fantasias fakes ou testes"
                       >
                         {isPurgingFakes ? (
@@ -1331,34 +934,14 @@ SELECT 'Sucesso! Todos os votos foram zerados no Supabase' AS status;`;
 
                       <button
                         type="button"
-                        onClick={() => setShowSqlModal(true)}
-                        className="px-3 py-1.5 rounded-lg bg-black/60 hover:bg-black/80 border border-emerald-400/50 text-emerald-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
+                        onClick={() => setIsResetConfirmOpen(true)}
+                        className="px-3.5 py-1.5 rounded-lg bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold font-cinzel flex items-center gap-1.5 shadow-md shadow-orange-700/40 cursor-pointer transition-all"
                       >
-                        <Code2 className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>Copiar SQL</span>
+                        <AlertTriangle className="w-3.5 h-3.5" />
+                        <span>Zerar Votos</span>
                       </button>
                     </div>
                   </div>
-
-                  {supabaseConnInfo && (
-                    <div className="text-xs p-2.5 rounded-lg bg-black/60 border border-emerald-500/30 flex items-center justify-between">
-                      <span>
-                        Status da Conexão:{' '}
-                        {supabaseConnInfo.connected ? (
-                          <strong className="text-emerald-400">
-                            ONLINE ({supabaseConnInfo.latencyMs}ms) • {supabaseConnInfo.count} candidatos na tabela
-                          </strong>
-                        ) : (
-                          <strong className="text-amber-400">
-                            Inacessível nesta rede: {supabaseConnInfo.error}
-                          </strong>
-                        )}
-                      </span>
-                      <span className="text-[10px] text-gray-400 hidden sm:inline">
-                        Dica: use na rede local (192.168.0.x)
-                      </span>
-                    </div>
-                  )}
                 </div>
 
                 {/* Candidate Registration / Edit Form */}
@@ -1734,137 +1317,7 @@ SELECT 'Sucesso! Todos os votos foram zerados no Supabase' AS status;`;
         </div>
       )}
 
-      {/* Supabase SQL Script Viewer Modal */}
-      {showSqlModal && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/95">
-          <div className="max-w-3xl w-full p-6 rounded-2xl bg-[#0b0c16] border-2 border-emerald-500 text-left space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-emerald-500/30 pb-3">
-              <div className="flex items-center gap-2 text-emerald-400">
-                <Code2 className="w-5 h-5" />
-                <h3 className="font-cinzel font-bold text-base text-white">
-                  Scripts SQL para Supabase Self-Hosted
-                </h3>
-              </div>
-              <button
-                onClick={() => setShowSqlModal(false)}
-                className="p-1 rounded text-gray-400 hover:text-white cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
 
-            {/* Script Tab Switcher */}
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setSqlModalTab('schema')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                  sqlModalTab === 'schema'
-                    ? 'bg-emerald-600 text-white shadow-md'
-                    : 'bg-black/60 text-gray-400 hover:text-white border border-white/10'
-                }`}
-              >
-                1. Estrutura RLS & RPC (cast_vote)
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setSqlModalTab('reset')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                  sqlModalTab === 'reset'
-                    ? 'bg-orange-600 text-white shadow-md'
-                    : 'bg-black/60 text-gray-400 hover:text-white border border-white/10'
-                }`}
-              >
-                2. Zerar Todos os Votos (SQL)
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setSqlModalTab('full')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                  sqlModalTab === 'full'
-                    ? 'bg-emerald-600 text-white shadow-md'
-                    : 'bg-black/60 text-gray-400 hover:text-white border border-white/10'
-                }`}
-              >
-                3. Script Completo
-              </button>
-            </div>
-
-            {/* Mixed Content / Fetch Explanatory Banner */}
-            <div className="p-3 rounded-xl bg-amber-950/40 border border-amber-500/40 text-xs text-amber-200/90 space-y-1">
-              <p className="font-bold text-amber-300 flex items-center gap-1.5">
-                <AlertTriangle className="w-4 h-4 text-amber-400" />
-                <span>Por que deu erro "Failed to fetch" ao clicar no botão?</span>
-              </p>
-              <p className="text-[11px] leading-relaxed">
-                Este aplicativo está hospedado em <strong>HTTPS seguro</strong> na nuvem, enquanto o seu Supabase está em <strong>HTTP interno ({SUPABASE_URL})</strong>. Por normas de segurança internacionais (Mixed Content / Private Network), navegadores bloqueiam requisições HTTPS para HTTP privado.
-              </p>
-              <p className="text-[11px] text-emerald-300 font-semibold">
-                👉 <strong>Solução Rápida (1 Minuto):</strong> Copie o SQL abaixo ou baixe o arquivo <code className="font-mono text-white">.sql</code> e cole no <strong>SQL Editor</strong> do seu painel Supabase (<code className="font-mono text-white">{SUPABASE_URL}</code>)!
-              </p>
-            </div>
-
-            <p className="text-xs text-gray-300">
-              Script gerado pronto para rodar no Supabase Studio:
-            </p>
-
-            <pre className="p-4 rounded-xl bg-black border border-emerald-500/30 text-[11px] font-mono text-emerald-300 overflow-x-auto max-h-72 select-all">
-              {getActiveSqlScript()}
-            </pre>
-
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={copySqlToClipboard}
-                  className="py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold font-cinzel flex items-center gap-2 cursor-pointer shadow-lg shadow-emerald-600/30 transition-all"
-                >
-                  {sqlCopied ? (
-                    <>
-                      <Check className="w-4 h-4 text-white" />
-                      <span>COPIADO PARA A ÁREA DE TRANSFERÊNCIA!</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-4 h-4" />
-                      <span>COPIAR SCRIPT SQL</span>
-                    </>
-                  )}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleDownloadSql}
-                  className="py-2.5 px-4 rounded-xl bg-black/70 hover:bg-black/90 border border-emerald-400/50 text-emerald-300 text-xs font-bold flex items-center gap-2 cursor-pointer transition-colors"
-                >
-                  <Download className="w-4 h-4 text-emerald-400" />
-                  <span>BAIXAR ARQUIVO .SQL</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleUploadToSupabase}
-                  disabled={isUploadingToSupabase}
-                  className="py-2.5 px-4 rounded-xl bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-500 hover:to-emerald-500 text-white text-xs font-bold font-cinzel flex items-center gap-2 cursor-pointer shadow-lg shadow-teal-600/30 transition-all disabled:opacity-50"
-                >
-                  <UploadCloud className="w-4 h-4" />
-                  <span>Tentar Subida Direta</span>
-                </button>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setShowSqlModal(false)}
-                className="py-2.5 px-4 rounded-xl border border-gray-600 text-gray-300 hover:text-white text-xs font-bold cursor-pointer"
-              >
-                Fechar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
